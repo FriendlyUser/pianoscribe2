@@ -90,3 +90,39 @@ def test_summary_reads_key_meter_tempo_and_counts() -> None:
 def test_key_names() -> None:
     assert key_name(0, None) == "C major" and key_name(2, "major") == "D major" and key_name(-3, "minor") == "C minor"
     assert key_name(0, "minor") == "A minor" and key_name(99, None) == "C# major"
+
+
+def test_opening_fidelity_separates_a_rushed_opening_from_a_sound_one(tmp_path: Path) -> None:
+    import mido
+
+    from app.models.fidelity import opening_fidelity
+
+    def midi(name: str, notes: list[tuple[float, int]]) -> Path:
+        track, now = mido.MidiTrack(), 0.0
+        track.append(mido.MetaMessage("set_tempo", tempo=500_000))
+        events = sorted([(t, "note_on", p) for t, p in notes] + [(t + 0.1, "note_off", p) for t, p in notes])
+        for when, kind, pitch in events:
+            ticks = round((when - now) * 960)
+            track.append(mido.Message(kind, note=pitch, velocity=80, time=ticks))
+            now += ticks / 960
+        file = mido.MidiFile(ticks_per_beat=480)
+        file.tracks.append(track)
+        path = tmp_path / name
+        file.save(path)
+        return path
+
+    melody = [(0.53, 69), (0.90, 74), (1.26, 76), (1.62, 77), (1.98, 79), (2.70, 76), (3.07, 81), (3.43, 84)]
+    annotation = {
+        "downbeats": [0.54, 2.73, 4.91, 7.09],
+        "melody": [{"start": t, "end": t + 0.3, "pitch": p} for t, p in melody],
+    }
+    sound = midi(
+        "sound.mid",
+        [(0.51, 46), (0.57, 69), (0.91, 74), (1.27, 76), (1.63, 77), (2.0, 79), (2.73, 76), (3.09, 81), (3.45, 84)],
+    )
+    rushed = midi(
+        "rushed.mid", [(0.91, 46), (1.09, 74), (1.27, 76), (1.45, 77), (1.63, 77), (2.73, 76), (3.09, 81), (3.45, 84)]
+    )
+    assert opening_fidelity(sound, annotation) == 1.0
+    assert opening_fidelity(rushed, annotation) < 0.8
+    assert opening_fidelity(sound, {"downbeats": [0.54], "melody": annotation["melody"]}) is None  # too short to judge

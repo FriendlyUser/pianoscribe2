@@ -9,7 +9,7 @@ accurate piano score from a recording? Candidates were compared on the grounded 
 | Stage | Model | Source | Released |
 |---|---|---|---|
 | Stem separation and transcription of every instrument; piano transcription with dynamics | **tsumugi** | [code](https://github.com/anime-song/tsumugi), weights fetched by the code | 2026 |
-| Beats, downbeats, per-bar time signatures, key, melody, chords | **SheetSage2-Refined** (built on SheetSage2 and MERT) | [anime-song/SheetSage2-Refined](https://huggingface.co/anime-song/SheetSage2-Refined) | 2026 |
+| Beats, downbeats, per-bar time signatures, melody, chords; keys and key changes (its key tracker) | **SheetSage2-Refined** (built on SheetSage2 and MERT) | [anime-song/SheetSage2-Refined](https://huggingface.co/anime-song/SheetSage2-Refined) | 2026 |
 | Song → piano arrangement | **tsumugi-piano-cover-v2** | [anime-song/tsumugi-piano-cover-v2](https://huggingface.co/anime-song/tsumugi-piano-cover-v2), [code](https://github.com/anime-song/tsumugi-piano-cover) | Oct-Nov 2026 |
 | Performance → notation (MusicXML) | **piano_perf2score** | same repository and checkpoint as the cover model | Oct-Nov 2026 |
 
@@ -38,21 +38,31 @@ F, D, C, F. Metrics are defined in [backend/eval/README.md](../backend/eval/READ
 | + missing bar meters completed | 0.829 | | | | | | 6/8 ✓ | |
 | + anticipated first chord settled, warm-up bars | 0.856 | 0.932 | 0.843 | 0.893 | 0.885 | 0.726 | 6/8 ✓ | 0.933 |
 | + bar regularization, pickup notation (same arrangement as the row above) | 0.863 | 0.932 | 0.845 | 0.893 | 0.914 | 0.726 | 6/8 ✓ | 0.933 |
-| **Full stack, from the YouTube link** (`docker compose up`, default settings) | **0.832** | 0.914 | 0.844 | 0.881 | 0.895 | 0.740 | 6/8 ✓ | 0.420 |
-| Test image, from the local recording (`pytest -m grounded`) | 0.864 | 0.908 | 0.870 | 0.894 | 0.903 | 0.767 | 6/8 ✓ | 0.697 |
+| Shipped pipeline before the key and first-bar fixes, from the YouTube link | 0.832 | 0.914 | 0.844 | 0.881 | 0.895 | 0.740 | 6/8 ✓ | 0.420 |
+| **+ key tracker, lead-in fix, untouched audio: from the YouTube link** (`docker compose up`) | **0.850** | 0.922 | 0.854 | 0.829 | 0.868 | 0.767 | 6/8 ✓ | 0.933 |
+| Same code, test image, from the local recording (`pytest -m grounded`) | 0.876 | 0.924 | 0.854 | 0.891 | 0.917 | 0.795 | 6/8 ✓ | 0.933 |
 
-The rows above the last two were measured on one arrangement (one sample of the cover model) while
-the fixes were developed; the last two are what the shipped pipeline produced, each from its own
-sample. The cover is sampled, and samples differ: fourteen arrangements of this song (different
-seeds, guidance strengths and batch positions) scored between 0.82 and 0.86 overall. Differences
-of a few hundredths between two runs are therefore noise. The steps in the upper part of the table
-are larger than that, were measured on the same arrangement, or were confirmed on a second piece.
+The rows down to "bar regularization" were measured on one arrangement (one sample of the cover
+model) while those fixes were developed; the last three are what the shipped pipeline produced,
+each from its own sample. The cover is sampled, and samples differ: with the current code, ten
+arrangements of this song scored between 0.84 and 0.88 overall, so a difference of a few
+hundredths between two runs is noise.
 
-The widest spread is in the key signatures (0.42 to 0.93 of bars): the song changes key three
-times (F, D, C, F) and the score model does not always follow. The 8-bar D major passage is
-written with one sharp in every arrangement that marks it at all, and the return to F for the
-last 61 bars is missed in several, including the run from the YouTube link. Melody,
-rhythm and bar placement vary by two or three points.
+**Keys.** The score model's own key signatures were right for 0.42 to 0.93 of bars depending on
+the arrangement. With signatures taken from SheetSage2-Refined's key tracker every arrangement
+gets the same regions (F, C from bar 30, F from bar 56) and scores 0.93. The remaining miss is an
+8-bar passage in D major, which the tracker hears for four bars; a key held for fewer than eight
+bars is written with accidentals.
+
+**First bar.** Before the fixes, bar 1 was often wrong, for two unrelated reasons. In four of
+the ten arrangements made during research, the arrangement struck a lead-in note before the first
+downbeat and the score model garbled the resulting pickup bar; the lead-in is now settled onto
+the downbeat, which fixed all four. And every arrangement made by the shipped pipeline began its
+opening phrase a beat late (7 of 7 generations, against 0 of 14 made from the untouched
+recording), because ingest had replaced the digital silence at the start of the audio with a
+one-bit DC offset; ingest now leaves the signal untouched. With both fixes the shipped pipeline's
+bar 1 states the opening phrase of the published arrangement, from the local recording and from
+the YouTube link.
 
 ### Transcribing piano: against Disklavier MIDI
 
@@ -75,7 +85,7 @@ step when other instruments are present.
 | Piece | Result |
 |---|---|
 | Ode to Joy, synthesized, every note known | G major, 4/4, 8 bars, 112 bpm, all 62 notes: exact |
-| Für Elise, bars 1-9, 32-second clip against the printed score | overall 0.89: every note present, rhythm 1.00, bar placement 1.00, bass 1.00. Two errors of notation: 3/4 with doubled note values instead of 3/8, and a key signature of one sharp instead of none. Two middle Cs are on the lower staff where the edition has them in the right hand. |
+| Für Elise, bars 1-9, 32-second clip against the printed score | overall 0.95: melody recall 0.97, rhythm 1.00, bar placement 1.00, bass 1.00, key signature correct (from the key tracker; the score model alone wrote one sharp). Remaining error: 3/4 with doubled note values instead of 3/8. |
 | Für Elise, same bars from the full 75-second recording | overall 0.90: melody recall 1.00, rhythm 1.00, bass 1.00, key correct; some left-hand notes written on the upper staff (melody precision 0.78) |
 | Mozart K. 545 (i), opening | C major, 4/4, opening bars match the printed score (checked by eye) |
 | Satie, Gymnopédie No. 1 | D major, 3/4 (checked by eye) |
@@ -83,6 +93,23 @@ step when other instruments are present.
 The score writer has a second mode that needs no beat grid. On the full Für Elise recording it
 scored 0.42 where the beat-grid mode, before this repository's fixes, scored 0.76, so the beat
 grid is always used.
+
+## Is this the best available?
+
+Checked again on 2026-11-16 against the Hugging Face model listings.
+
+- **Arranging and score writing:** tsumugi-piano-cover-v2 (October 2026) is the newest published
+  model for turning a song into a piano cover, and the only one that comes with a matching
+  score-writing model. Earlier systems exist as papers (Pop2Piano 2023, PiCoGen 2024, AMT-APC
+  2024, Etude 2026); none was benchmarked here, so "newest" is established and "best" is not.
+- **Transcription:** on solo piano tsumugi equals the strongest piano-only model measured (0.978
+  against 0.981 onset F1). For dense multi-instrument recordings MuScriptor (July 2026) reports
+  much higher scores than the previous open baseline in its authors' own evaluation. It could
+  not be tested: the weights are gated. Note also that the cover model was fine-tuned on tsumugi
+  transcriptions, so a different transcriber is not guaranteed to help even if it is more
+  accurate; it would have to be measured on the arrangement benchmark.
+- **Keys, beats, melody:** SheetSage2-Refined. Its key tracker was already part of the stack and
+  unused; putting it to work was the single largest fix to key signatures.
 
 ## Candidates not used
 

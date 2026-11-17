@@ -3,13 +3,13 @@
     python notate_cover.py --checkpoint REPO --cover cover.mid --annotation sheetsage.json \
         --chords source.mid --out score.musicxml
 
-This is ``piano_perf2score.generate.score_from_cover`` with three additions.
+This is ``piano_perf2score.generate.score_from_cover`` with additions, each a small
+function in ``score_fixes.py`` that grounded tests showed to be needed.
 
-1. **Anticipated first chord.** A generated performance often strikes its first
-   notes a few hundredths of a second before the first downbeat. Read literally,
-   that is an anacrusis bar holding nothing but those notes, and the score model
-   then stumbles through the opening bars. Notes that precede the first downbeat by
-   less than half a beat are moved onto it.
+1. **Lead-in before the first downbeat.** A generated performance often strikes a bass
+   note or chord up to a beat ahead of the first downbeat. Read literally that is a
+   pickup bar, which the score model writes at double speed, swallowing the start of
+   bar 1. When the melody itself starts on the downbeat, the lead-in is moved onto it.
 2. **Meter of bars the beat tracker did not label.** The score model takes each
    bar's time signature from the tracker's bars, but only when *every* bar has one.
    A real anacrusis bar lies before the tracker's first bar and has none, so the
@@ -22,6 +22,9 @@ This is ``piano_perf2score.generate.score_from_cover`` with three additions.
    third bar on it is reliable. So the opening of the performance is played to it
    twice: a copy of the first bars is put in front as context, and the measures
    written for that copy are discarded.
+4. **Key signatures from the key tracker** (``--keys``). The score model infers keys
+   from the notes it is given and misses or misplaces key changes; SheetSage2-Refined's
+   key tracker hears them in the recording.
 """
 
 from __future__ import annotations
@@ -33,8 +36,12 @@ from pathlib import Path
 import numpy as np
 import torch
 from score_fixes import (
+    bar_signatures,
     complete_meters,
+    correct_regions,
     drop_warmup,
+    follow_tracker,
+    lead_in_to_settle,
     mark_anacrusis,
     plan_warmup,
     regularize_bars,
@@ -43,32 +50,53 @@ from score_fixes import (
 )
 
 
-def settle_anticipation(cover: Path, annotation: dict, out: Path) -> Path:
-    """Move notes that anticipate the first downbeat by under half a beat onto it."""
+def settle_lead_in(cover: Path, annotation: dict, out: Path) -> Path:
+    """Move an accompaniment lead-in before the first downbeat onto it (see ``lead_in_to_settle``)."""
     from symusic import Score
 
-    downbeats, beats = annotation.get("downbeats") or [], annotation.get("beats") or []
-    if not downbeats or len(beats) < 2:
-        return cover
-    first = float(downbeats[0])
-    half_beat = 0.5 * float(np.median(np.diff(beats)))
     score = Score(str(cover)).to("second")
     starts = [note.time for track in score.tracks for note in track.notes]
-    if not starts or not (first - half_beat <= min(starts) < first):
+    first = lead_in_to_settle(starts, annotation)
+    if first is None:
         return cover
-    if any(t < first - half_beat for t in starts):
-        return cover  # a genuine anacrusis: leave it alone
     for track in score.tracks:
-        for note in track.notes:
-            if note.time < first:
+        on_downbeat = {note.pitch for note in track.notes if first - 1e-3 <= note.time <= first + 0.06}
+        early = [note for note in track.notes if note.time < first - 1e-3]
+        for note in early:
+            if note.pitch in on_downbeat or note.time + note.duration <= first + 0.05:
+                note.duration = 0.0  # struck again on the downbeat, or over before it: drop
+            else:
                 note.duration = max(0.05, note.duration - (first - note.time))
                 note.time = first
+                on_downbeat.add(note.pitch)
+        kept = [note for note in track.notes if note.duration > 0.0]
+        if len(kept) != len(track.notes):
+            track.notes.clear()
+            track.notes.extend(kept)
         for pedal in getattr(track, "pedals", []):
             if pedal.time < first:
                 pedal.duration = max(0.05, pedal.duration - (first - pedal.time))
                 pedal.time = first
     score.to("tick").dump_midi(str(out))
     return out
+
+
+def apply_signatures(measures: list, signatures: list[int]) -> int:
+    """Give each measure its key signature and spell the notes of changed measures for it."""
+    from piano_perf2score.tidy import chromatic_spelling, spell_pitch_class
+
+    changed = 0
+    for measure, signature in zip(measures, signatures, strict=True):
+        if measure.key == signature:
+            continue
+        changed += 1
+        measure.key = signature
+        for group in measure.groups:
+            for note in group.notes:
+                note.alter = spell_pitch_class(note.pitch % 12, signature)
+    if changed:
+        chromatic_spelling(measures)
+    return changed
 
 
 def install_warmup(start: float, end: float, guard: float) -> None:
@@ -105,6 +133,14 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     parser.add_argument("--title", default=None)
     parser.add_argument("--no-warmup", action="store_true")
+    parser.add_argument("--keys", default=None, help="key tracker output (sheetsage2_refined.keys)")
+    parser.add_argument(
+        "--key-policy",
+        choices=("follow", "correct"),
+        default="follow",
+        help="follow: key signatures come from the tracker (songs); correct: the score model's regions, "
+        "each corrected where the tracker hears a single signature (solo piano)",
+    )
     args = parser.parse_args()
 
     from piano_perf2score.beat_input import BEAT_SECONDS
@@ -121,7 +157,7 @@ def main() -> None:
     annotation = json.loads(Path(args.annotation).read_text(encoding="utf-8"))
     annotation = regularize_bars(annotation)
     chords = read_chord_markers(args.chords or args.cover)
-    cover = settle_anticipation(Path(args.cover), annotation, Path(args.out).with_suffix(".settled.mid"))
+    cover = settle_lead_in(Path(args.cover), annotation, Path(args.out).with_suffix(".settled.mid"))
 
     from symusic import Score
 
@@ -156,10 +192,25 @@ def main() -> None:
     apply_bar_tempos(measures, performance, tidied.rests)
     if performance.chords:
         place_chords(measures, performance, performance.chords, tidied.rests)
-    measures = drop_warmup(measures, warmup_measures)
+    # tidy_score may have removed empty measures at the very start; they count toward the warm-up.
+    first_bar = max(warmup_measures, tidied.rests)
+    measures = drop_warmup(measures, first_bar - tidied.rests)
+    key_changes = 0
+    if args.keys:
+        tracked = json.loads(Path(args.keys).read_text(encoding="utf-8")).get("keys") or []
+        shift = (warmup[1] - warmup[0]) if warmup is not None else 0.0
+        bar_starts = [float(t) - shift for t in performance.bar_seconds[first_bar : first_bar + len(measures)]]
+        if tracked and len(bar_starts) == len(measures):
+            heard = bar_signatures(tracked, bar_starts)
+            model_keys = [m.key for m in measures]
+            policy = follow_tracker if args.key_policy == "follow" else correct_regions
+            key_changes = apply_signatures(measures, policy(model_keys, heard))
     mark_anacrusis(measures)
     write_musicxml(measures, Path(args.out), title=args.title)
-    print(f"{len(measures)} measures -> {args.out} (warm-up measures dropped: {warmup_measures})")
+    print(
+        f"{len(measures)} measures -> {args.out} "
+        f"(warm-up measures dropped: {warmup_measures}, measures given the tracked key: {key_changes})"
+    )
 
 
 if __name__ == "__main__":

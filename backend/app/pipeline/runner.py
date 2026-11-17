@@ -73,9 +73,9 @@ class Pipeline:
         from app.ingest import media, youtube
         from app.ingest.signatures import MediaKind
 
-        normalized = self.workdir / "audio.wav"
-        if normalized.exists():
-            return normalized
+        decoded = self.workdir / "audio.wav"
+        if decoded.exists():
+            return decoded
         source = self.job.source
         if source.kind == SourceKind.YOUTUBE:
             assert source.video_id is not None
@@ -91,17 +91,17 @@ class Pipeline:
                     "source_expired", "The uploaded file is no longer stored on the server. Please upload it again."
                 )
             expected, cleanup = MediaKind(source.media_kind) if source.media_kind else None, raw
-        self._report(Stage.INGESTING, 0.6, "Validating and normalizing audio", force=True)
+        self._report(Stage.INGESTING, 0.6, "Validating and decoding audio", force=True)
         try:
             media.probe(raw, self.settings, expected=expected)
-            media.decode_and_normalize(raw, normalized, self.settings)
+            media.decode_audio(raw, decoded, self.settings)
         finally:
             # Raw media is deleted as soon as it has been decoded (or rejected).
             if cleanup.is_dir():
                 shutil.rmtree(cleanup, ignore_errors=True)
             else:
                 cleanup.unlink(missing_ok=True)
-        return normalized
+        return decoded
 
     def _transcribe_progress(self) -> Callable[[float, str], None]:
         def report(fraction: float, message: str) -> None:
@@ -111,6 +111,22 @@ class Pipeline:
                 self._report(Stage.TRANSCRIBING, (fraction - 0.3) / 0.7, message)
 
         return report
+
+    def _keys(self, audio: Path) -> Path | None:
+        """Keys and key changes heard in the recording, or None if the tracker fails (the score
+        is then written with the score model's own key signatures)."""
+        from app.models import song
+
+        keys = self.workdir / "keys.json"
+        if keys.exists():
+            return keys
+        self._report(Stage.ARRANGING, 0.9, "Listening for the key", force=True)
+        try:
+            with self._timed("keys"):
+                return song.track_keys(audio, keys, self.settings)
+        except (ModelStepError, RuntimeError) as error:
+            log.warning("pipeline.keys_unavailable", error=str(error))
+            return None
 
     def _arrangement(self, audio: Path) -> tuple[Path, Path, dict[str, object]]:
         """Song -> (score.musicxml, performance.mid, facts). Each model stage is checkpointed."""
@@ -132,19 +148,48 @@ class Pipeline:
                 result = song.generate_covers(source, audio, cover_dir, self.settings)
                 annotation = json.loads(result.annotation.read_text(encoding="utf-8"))
                 best, scores = fidelity.choose_cover(result.candidates, annotation)
+                # The opening is where a sampled arrangement most often goes wrong. If it does
+                # not play the melody the recording opens with, sample again with the next seed.
+                opening = fidelity.opening_fidelity(best, annotation)
+                attempts = 1
+                while (
+                    opening is not None
+                    and opening < self.settings.cover_opening_min_fidelity
+                    and attempts <= self.settings.cover_opening_retries
+                ):
+                    self._report(Stage.ARRANGING, 0.5, "Arranging the opening again", force=True)
+                    retry = song.generate_covers(
+                        source,
+                        audio,
+                        self.workdir / f"cover-retry{attempts}",
+                        self.settings,
+                        seed=self.settings.cover_seed + attempts,
+                        annotation=result.annotation,
+                    )
+                    candidate, _ = fidelity.choose_cover(retry.candidates, annotation)
+                    candidate_opening = fidelity.opening_fidelity(candidate, annotation)
+                    log.info("pipeline.opening_retry", attempt=attempts, was=opening, now=candidate_opening)
+                    attempts += 1
+                    if candidate_opening is not None and candidate_opening > opening:
+                        best, opening = candidate, candidate_opening
                 facts = {
                     "candidates": len(result.candidates),
+                    "attempts": attempts,
                     "fidelity_scores": [round(s, 4) for s in scores],
+                    "opening_fidelity": None if opening is None else round(opening, 4),
                     "melody_fidelity": round(fidelity.melody_fidelity(best, annotation), 4),
                 }
                 shutil.copyfile(result.annotation, annotation_path)
                 shutil.copyfile(best, chosen)
                 facts_path.write_text(json.dumps(facts))
+            for leftover in self.workdir.glob("cover-retry*"):
+                shutil.rmtree(leftover, ignore_errors=True)
             shutil.rmtree(cover_dir, ignore_errors=True)
             log.info("pipeline.arranged", **facts)
 
         score = self.workdir / "score.musicxml"
         if not score.exists():
+            keys = self._keys(audio)
             self._report(Stage.ENGRAVING, 0.0, "Writing the score", force=True)
             with self._timed("notate"):
                 song.write_score(
@@ -154,6 +199,7 @@ class Pipeline:
                     score,
                     self.settings,
                     title=self.job.title,
+                    keys=keys,
                     progress=lambda f: self._report(Stage.ENGRAVING, 0.7 * f, "Writing the score"),
                 )
         return score, chosen, json.loads(facts_path.read_text())
@@ -176,6 +222,7 @@ class Pipeline:
                 song.annotate_audio(audio, annotation, self.settings)
         score = self.workdir / "score.musicxml"
         if not score.exists():
+            keys = self._keys(audio)
             self._report(Stage.ENGRAVING, 0.0, "Writing the score", force=True)
             with self._timed("notate"):
                 song.write_score(
@@ -185,6 +232,7 @@ class Pipeline:
                     score,
                     self.settings,
                     title=self.job.title,
+                    keys=keys,
                     progress=lambda f: self._report(Stage.ENGRAVING, 0.7 * f, "Writing the score"),
                 )
         return score, performance, {}

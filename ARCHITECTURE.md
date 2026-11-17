@@ -4,8 +4,7 @@ PianoScribe 2 is a rebuild of [the first PianoScribe](https://github.com/Friendl
 around one priority: the score has to be right. The first version transcribed with a 2021 piano
 model and wrote notation with hand-made rules; measured against a published piano arrangement it
 scored 0.40, then 0.73 after a second pass. This version replaces every musical stage with current
-models from Hugging Face, scores 0.83 on the same reference from the YouTube link (0.82 to 0.86 over fourteen sampled
-arrangements), and keeps that number honest with tests against ground truth. Model choice, benchmarks and licences are in
+models from Hugging Face, scores 0.88 on the same reference (0.84 to 0.88 over nine arrangements), and keeps that number honest with tests against ground truth. Model choice, benchmarks and licences are in
 [docs/MODELS.md](docs/MODELS.md); how accuracy is measured is in
 [backend/eval/README.md](backend/eval/README.md).
 
@@ -22,7 +21,7 @@ version 1 and is described here as it now stands.
 | Decoding | ffmpeg / ffprobe, sandboxed | The only code that parses untrusted media |
 | YouTube | yt-dlp (+ Deno JS runtime), sandboxed | Invoked only with a URL rebuilt from a validated video id |
 | Stem separation + transcription | [tsumugi](https://github.com/anime-song/tsumugi) | Instrument-agnostic transcriber with its own stem workflow, instrument labels and a velocity model; matches the best piano-only model on MAESTRO |
-| Beats, bars, meter, key, melody, chords | [SheetSage2-Refined](https://huggingface.co/anime-song/SheetSage2-Refined) | One model for the whole metrical frame, including per-bar time signatures |
+| Beats, bars, meter, melody, chords; keys and key changes | [SheetSage2-Refined](https://huggingface.co/anime-song/SheetSage2-Refined) | One model for the whole metrical frame, including per-bar time signatures, and a key tracker that follows modulations |
 | Arranging a song for piano | [tsumugi-piano-cover-v2](https://huggingface.co/anime-song/tsumugi-piano-cover-v2) | Generates a playable two-hand part that follows the original on its beat grid |
 | Performance to notation | `piano_perf2score` (same repository) | Learned note values, voices, hands, ties, key and clef; writes MusicXML |
 | Model runtime | Each model in the environment its authors lock, run as a subprocess | No dependency conflicts, GPU memory released between stages, a hang or crash cannot take the worker down |
@@ -86,22 +85,41 @@ signatures and clefs.
 ### What this project adds around the models
 
 `backend/model_scripts/` holds the drivers that run inside the model environments. The score
-writer is used through its Python API rather than its command line, because four faults in its
+writer is used through its Python API rather than its command line, because several faults in its
 default behaviour showed up in grounded testing. Each fix is a small pure function in
 `score_fixes.py` with unit tests, and each one was kept only because it raised a measured score.
 
 | Fault observed | Fix | Effect on the Scene Shifts There benchmark |
 |---|---|---|
 | A bar the beat model leaves without a time signature (typically the pickup) let the score model guess the meter for the whole piece: 6/8 came out as 3/4. | `complete_meters`: a bar without a meter takes its neighbours' beat unit and its own length. | overall 0.78 → 0.83, meter correct |
-| The cover model often plays the first chord just before the first downbeat; written literally it becomes a pickup of tied fragments. | `settle_anticipation`: notes within a short window before the first downbeat move onto it. | cleaner first bar, same score |
+| The cover model often strikes a bass note or chord up to a beat before the first downbeat. Written literally that is a pickup bar, which the score model writes at double speed, swallowing the start of bar 1 (4 of the 10 arrangements made during research). | `lead_in_to_settle`: when the melody itself starts on the downbeat, the lead-in is moved onto it. A melody that starts early is a real anacrusis and is left alone. | first bar correct in all four |
 | The score model writes its first bar without context, at double speed with invented notes. | Warm-up: the opening two bars are given to the model twice, and the measures written for the first copy are dropped (`plan_warmup`, `warmed_annotation`, `drop_warmup`). Notes struck just ahead of the next downbeat are left out of the copy, or they reappear as an invented first note (`warm_events`). | overall 0.83 → 0.86 |
 | The beat model sometimes marks every other bar line (bars of N and 2N beats mixed), or swallows an anacrusis into the first bar. | `regularize_bars`: double-length bars are split where the short bar is common, and a long first bar gives up its pickup. | bar placement 0.89 → 0.91; Für Elise opening 0.76 → 0.90 |
+| The score model infers keys from the notes it is given. It missed or misplaced key changes (0.42 to 0.93 of bars under the right signature, depending on the arrangement) and gave a short Für Elise clip one sharp. | Key signatures come from SheetSage2-Refined's key tracker, which hears the recording (`bar_signatures`). Songs follow it; for solo piano it only corrects a region the score model got wrong (`correct_regions`). | key 0.93 in all 8 arrangements; Für Elise clip corrected |
 
-`app/models/fidelity.py` computes `melody_fidelity`: the share of the detected
-melody that the arrangement plays in time. It is reported with each arrangement. It was tried as a
-way to pick the best of several sampled covers and rejected: across six covers it did not
-correlate with the reference score (and all fourteen covers measured scored 0.82 to 0.86), so one cover is generated
-(`PS_COVER_CANDIDATES=1`).
+**Key signatures.** A key and a key signature are not the same thing. The tracker follows the
+music closely: in the benchmark song it reports F, D, C, G, D, C, F, where the printed
+arrangement changes signature three times. Two rules turn keys into signatures. A key held for
+fewer than eight bars keeps the signature already in force and is written with accidentals. And
+the two paths differ: a song's signatures follow the tracker, because the score model only ever
+sees the generated arrangement; a solo recording keeps the score model's own regions, because it
+reads the real notes and has learnt how editions print them (no new signature for the G major
+second theme of a Mozart sonata in C, which the tracker correctly hears as G major), and the
+tracker only overrules a region in which it hears one signature throughout.
+
+**The opening.** `app/models/fidelity.py` measures how much of the detected melody an
+arrangement plays in time, over the whole song (`melody_fidelity`, reported with each score) and
+over its first two bars (`opening_fidelity`). An arrangement whose opening scores under 0.8 is
+generated again with the next seed, at most twice, and the best opening is kept. Whole-song
+fidelity was also tried as a way to pick the best of several sampled covers and rejected: it did
+not correlate with the reference score, so one cover is generated (`PS_COVER_CANDIDATES=1`).
+
+**Leave the audio alone.** Ingest decodes to 44.1 kHz stereo PCM and does nothing else. An
+earlier version also removed the DC offset and normalised the peak. That turned the digital
+silence at the start of a track into a constant one-bit offset, which changed the arrangement
+model's audio features for the first bar: every arrangement made from the processed audio began
+its opening phrase a beat late (7 of 7), every one made from the untouched audio began correctly
+(14 of 14). Changing only the level, by up to a factor of four, had no effect.
 
 ### Running the models
 
@@ -223,23 +241,17 @@ with its outcome; per-stage timings are stored on the job record and returned by
 - The beat unit can be wrong while everything else is right: Für Elise (3/8) is written in 3/4
   with every note value doubled. The notes and bar lines are correct and the music reads, but the
   time signature is not the composer's. This is pinned by an expected-failure test.
-- Arrangements are sampled, so quality varies a little from one to the next (0.82 to 0.86 on the
-  benchmark). Now and then the first bar is the weak one: in the default run of the
-  benchmark song the opening five-note figure is reduced to its third and fourth notes. Changing `PS_COVER_SEED` gives a different arrangement.
-- Key changes are followed unreliably. The benchmark song goes F, D, C, F. Across arrangements,
-  the share of bars under the right key signature ranged from 0.42 to 0.93; the commonest miss is
-  the return to F. A rule that splits a long stretch where a new signature clearly needs fewer
-  accidentals found that change every time, but it also invented a key change in Satie's first
-  Gymnopédie, so it was not adopted.
-- Key signatures need context. A 32-second clip of Für Elise (A minor) is written with one
-  sharp; the full recording gets no sharps, correctly. A check based on key profiles was tried
-  and dropped: it fixed one encoding of the clip and not another.
+- Arrangements are sampled, so quality varies a little from one to the next (0.84 to 0.88 on the
+  benchmark). Changing `PS_COVER_SEED` gives a different arrangement.
+- A key held for fewer than eight bars does not get its own key signature. In the benchmark the
+  tracker hears four bars of D major where the published arrangement prints eight bars under two
+  sharps; those bars are written in F major with accidentals.
 - Bar lines follow the beat model. Where a pianist slows down or lingers, it can count an extra
   beat, and a bar of 5/4 or 4/4 appears in a 3/4 piece. The notes are still right.
 - The models are trained mostly on Japanese pop, anime and game music plus piano repertoire.
   Expect the best results there and weaker ones on, for example, dense orchestral or jazz
   recordings. One benchmark song and a handful of piano pieces are not a broad evaluation.
-- Bass accuracy (0.73 on the benchmark) is the weakest measured dimension of arrangements: the
+- Bass accuracy (0.67 to 0.80 on the benchmark) is the weakest measured dimension of arrangements: the
   left hand sometimes takes a chord tone other than the one a human arranger chose.
 - Solo piano scores keep the notes that were played, but left-hand notes near middle C are
   sometimes written on the upper staff.
@@ -248,7 +260,7 @@ with its outcome; per-stage timings are stored on the job record and returned by
 
 **System**
 
-- A GPU is needed in practice. On an RTX 4060 (8 GB) a 4.4-minute song takes five to six minutes
+- A GPU is needed in practice. On an RTX 4060 (8 GB) a 4.4-minute song takes six to nine minutes
   and a 30-second piano clip a minute and a half; CPU-only runs are untested beyond start-up and
   will be many times slower.
 - The worker image is large (about 11 GB: two PyTorch environments) and the weights add 4.5 GB.
@@ -271,8 +283,8 @@ with its outcome; per-stage timings are stored on the job record and returned by
 - **Worker pools.** Split the single actor into per-stage queues: CPU ingest workers (network
   access, strongest sandbox), GPU model workers (no internet), CPU engraving workers. The stage
   checkpoints already make this split possible.
-- **Model serving.** Each model step currently loads its weights per job (roughly a minute of a
-  five-minute job). At volume, keep the models resident in long-lived per-model server processes
+- **Model serving.** Each model step currently loads its weights per job (roughly a minute and a half of a
+  seven-minute job). At volume, keep the models resident in long-lived per-model server processes
   and batch across jobs.
 - **Isolation.** Run ingest in gVisor/Kata or Firecracker with an egress proxy that only allows
   YouTube endpoints.

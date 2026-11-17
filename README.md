@@ -26,15 +26,15 @@ the model comparison in [docs/MODELS.md](docs/MODELS.md).
 
 | | v1 first release | v1 second pass | **PianoScribe 2** |
 |---|---|---|---|
-| Overall agreement | 0.40 | 0.73 | **0.83** from the YouTube link (0.82 to 0.86 over 14 arrangements) |
+| Overall agreement | 0.40 | 0.73 | **0.85** from the YouTube link (0.84 to 0.88 over 10 arrangements) |
 
-The arrangement is sampled, so the same song can come out a little differently; fourteen
-arrangements of the benchmark song all landed between 0.82 and 0.86. The run through the full
-stack from the YouTube link scored 0.83:
+The arrangement is sampled, so the same song can come out a little differently; ten arrangements
+of the benchmark song landed between 0.84 and 0.88. The run through the full stack from the
+YouTube link scored 0.85:
 
-| Melody notes present | Rhythm | Place in the bar | Bass | Time signature | Bars under the right key signature |
-|---|---|---|---|---|---|
-| 91% | 88% | 90% | 74% | 6/8, correct | 42%: the return to F major for the last 61 bars is missed, and an 8-bar passage in D major gets one sharp instead of two |
+| Melody notes present | Rhythm | Place in the bar | Bass | Time signature | Bars under the right key signature | First bar |
+|---|---|---|---|---|---|---|
+| 92% | 83% | 87% | 77% | 6/8, correct | 93%: both lasting key changes followed; an 8-bar passage in D major is written with accidentals | all five notes of the opening phrase, on the downbeat |
 
 **Transcribing solo piano:**
 
@@ -42,7 +42,7 @@ stack from the YouTube link scored 0.83:
 |---|---|
 | MAESTRO v3 test recordings (Disklavier MIDI), six pieces | note onset F1 0.978 (onset and length: 0.874) |
 | Synthesized piece with every note known | all notes, key, meter, tempo and bar count exact |
-| Für Elise, 32-second recording against the printed score (bars 1-9) | every melody note, the rhythm, the bar lines and the bass correct; written in 3/4 with doubled note values instead of 3/8, and with one sharp too many in the key signature |
+| Für Elise, 32-second recording against the printed score (bars 1-9) | overall 0.95: the melody, rhythm, bar lines, bass and key signature correct; written in 3/4 with doubled note values instead of 3/8 |
 
 One arrangement benchmark and a handful of piano pieces are a small evaluation. They are enough to
 catch regressions and to compare approaches; they are not a claim about every genre. See
@@ -73,7 +73,7 @@ Without a GPU, `docker compose up --build` runs the same code on the CPU. It wor
 takes a large multiple of the GPU time; treat it as a way to check the installation.
 
 Measured on an RTX 4060 (8 GB) with the weights already downloaded: a 30-second piano clip in
-about 1.5 minutes, a 4.4-minute song from a YouTube link in 5 to 6 minutes. Most of that is the model
+about 1.5 minutes, a 4.4-minute song from a YouTube link in 6 to 9 minutes. Most of that is the model
 stages loading and running one after another.
 
 Check the installation from inside the worker:
@@ -157,6 +157,7 @@ Environment variables with the `PS_` prefix; copy `.env.example` to `.env`. The 
 | `PS_COVER_SOURCE_CFG` | `2.0` | How closely an arrangement follows the original (higher: closer) |
 | `PS_COVER_DENSITY` | `1.0` | Note density of arrangements |
 | `PS_COVER_SEED` | `0` | Arrangements are sampled; a fixed seed makes them repeatable |
+| `PS_COVER_OPENING_RETRIES` | `2` | Times an arrangement is generated again when its opening does not play the detected melody |
 | `PS_PAGE_SIZE` | `A4` | `A4` or `Letter` |
 
 The full list is in [backend/app/config.py](backend/app/config.py).

@@ -46,12 +46,8 @@ def test_notes_sit_at_the_right_place_in_their_bar(scores: ArrangementScores) ->
     assert scores.bar_placement >= 0.9, scores  # includes the pickup, written as an incomplete first bar
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Known limit: on this 32-second clip the score model writes one sharp (E minor) for a piece "
-    "in A minor. From the full recording it gets the key right; a short clip gives it too little context.",
-)
 def test_the_key_signature_is_a_minor(scores: ArrangementScores) -> None:
+    # The score model alone writes one sharp for this short clip; the key tracker corrects it.
     assert scores.key_accuracy == 1.0, scores
 
 

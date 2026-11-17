@@ -55,6 +55,30 @@ def melody_fidelity(cover_midi: Path, annotation: dict[str, Any], *, window: flo
     return hits / total if total else 0.0
 
 
+OPENING_BARS = 2
+
+
+def opening_fidelity(cover_midi: Path, annotation: dict[str, Any]) -> float | None:
+    """Melody fidelity over the first two bars of melody, or None when there is too little to judge.
+
+    The cover model writes from left to right, so its opening is its least certain
+    part: now and then it rushes or drops the first phrase. That shows up here as a
+    low score, while a sound opening scores 1.0.
+    """
+    melody = annotation.get("melody") or []
+    downbeats = [float(d) for d in annotation.get("downbeats") or []]
+    if not melody or not downbeats:
+        return None
+    first = min(float(n["start"]) for n in melody)
+    later = [d for d in downbeats if d > first + 0.05]
+    if len(later) < OPENING_BARS:
+        return None
+    end = later[OPENING_BARS - 1]
+    if sum(1 for n in melody if float(n["start"]) < end) < 4:
+        return None
+    return melody_fidelity(cover_midi, annotation, window=end)
+
+
 def choose_cover(candidates: list[Path], annotation: dict[str, Any]) -> tuple[Path, list[float]]:
     """Pick the candidate most faithful to the melody; returns it and every candidate's score."""
     if not candidates:

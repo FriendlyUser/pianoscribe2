@@ -231,3 +231,80 @@ def test_warm_events_repeat_the_opening_notes_and_keep_every_other_event() -> No
     assert rest[:, 0].tolist() == [5, 60, 90, 108, 120, 140]  # everything from the start moves by 50
     assert (warmed[:, 1] == pedal).sum() == (events[:, 1] == pedal).sum() == 2  # no orphaned pedal event
     assert events[1, 0] == 10  # the input is untouched
+
+
+def test_key_names_map_to_key_signatures() -> None:
+    from score_fixes import signature_of
+
+    assert [signature_of(k) for k in ("C:major", "G:major", "D:major", "F:major", "A#:major", "F#:major")] == [
+        0,
+        1,
+        2,
+        -1,
+        -2,
+        6,
+    ]
+    assert [signature_of(k) for k in ("A:minor", "E:minor", "D:minor", "C#:minor", "A:harmonic_minor")] == [
+        0,
+        1,
+        -1,
+        4,
+        0,
+    ]
+    # A mode takes the signature of the major scale with the same notes.
+    assert [signature_of(k) for k in ("D:dorian", "E:phrygian", "F:lydian", "G:mixolydian", "B:locrian")] == [0] * 5
+    assert signature_of("E:phrygian_dominant") == 0  # the notes of A harmonic minor
+    assert signature_of("Bb:major") == -2 and signature_of("") is None and signature_of("C:unknown") is None
+
+
+def _keys(*segments: tuple[float, str]) -> list[dict]:
+    return [{"start": start, "end": 0.0, "key": key} for start, key in segments]
+
+
+def test_a_brief_excursion_keeps_the_signature_in_force() -> None:
+    from score_fixes import bar_signatures
+
+    bars = [float(i) for i in range(40)]
+    # C for 12 bars, four bars each of G and D, C again, then F to the end.
+    tracked = _keys((0, "C:major"), (12, "G:major"), (16, "D:major"), (20, "C:major"), (26, "F:major"))
+    assert bar_signatures(tracked, bars) == [0] * 26 + [-1] * 14
+
+
+def test_a_key_that_lasts_gets_its_signature_and_a_short_opening_joins_what_follows() -> None:
+    from score_fixes import bar_signatures
+
+    bars = [float(i) for i in range(30)]
+    assert (
+        bar_signatures(_keys((0, "F:major"), (10, "D:major"), (18, "C:major")), bars) == [-1] * 10 + [2] * 8 + [0] * 12
+    )
+    assert bar_signatures(_keys((0, "E:major"), (3, "A:minor")), bars) == [0] * 30
+    assert bar_signatures(_keys((0, "A:minor"), (20, "C:major")), bars) == [0] * 30  # relative keys: one signature
+    assert bar_signatures([], bars) == [None] * 30
+
+
+def test_songs_follow_the_tracker_and_solo_piano_is_only_corrected() -> None:
+    from score_fixes import correct_regions, follow_tracker
+
+    model = [1] * 12 + [0] * 12
+    assert follow_tracker(model, [0] * 24) == [0] * 24
+    assert follow_tracker(model, [None] * 24) == model
+    # Solo: the first region is heard as one signature throughout and corrected; the second
+    # spans a change the score model chose not to print, and is left as the model wrote it.
+    assert correct_regions(model, [0] * 12 + [0] * 4 + [1] * 8) == [0] * 24
+    assert correct_regions([0] * 24, [0] * 8 + [1] * 12 + [0] * 4) == [0] * 24
+    assert correct_regions([1] * 24, [0] * 24) == [0] * 24
+
+
+def test_only_an_accompaniment_lead_in_is_settled() -> None:
+    from score_fixes import lead_in_to_settle
+
+    beats = [round(0.168 + 0.37 * i, 3) for i in range(20)]
+    annotation = {"beats": beats, "downbeats": [0.538, 2.758], "melody": [{"start": 0.53, "end": 0.9, "pitch": 69}]}
+    assert lead_in_to_settle([0.17, 0.51, 0.54, 0.91], annotation) == 0.538  # a bass note one beat early
+    assert lead_in_to_settle([0.48, 0.51, 0.91], annotation) == 0.538  # a slightly early chord
+    assert lead_in_to_settle([0.54, 0.91], annotation) is None  # nothing before the downbeat
+    assert lead_in_to_settle([0.05, 0.54], annotation) is None  # more than a beat ahead: an introduction
+    pickup = {**annotation, "melody": [{"start": 0.17, "end": 0.5, "pitch": 76}]}
+    assert lead_in_to_settle([0.17, 0.54], pickup) is None  # the melody itself has an anacrusis
+    no_melody = {**annotation, "melody": []}
+    assert lead_in_to_settle([0.17, 0.54], no_melody) is None and lead_in_to_settle([0.45, 0.54], no_melody) == 0.538

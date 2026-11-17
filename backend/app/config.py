@@ -89,6 +89,13 @@ class Settings(BaseSettings):
     cover_seed: int = 0
     # Candidates generated per song; the one most faithful to the detected melody is kept.
     cover_candidates: int = 1
+    # An arrangement whose first two bars play less than this share of the detected melody is
+    # generated again with the next seed, up to this many times; the best opening is kept.
+    cover_opening_min_fidelity: float = 0.8
+    cover_opening_retries: int = 2
+    # Share of GPU memory the beat / key models may take (their own default, 0.6, is too
+    # little on an 8 GB card).
+    analysis_memory_fraction: float = 0.95
 
     page_size: Literal["A4", "Letter"] = "A4"
 

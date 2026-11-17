@@ -9,6 +9,122 @@ WARMUP_BARS = 2
 COMMON_BAR_SHARE = 0.25
 
 
+# Bars a key must last before it gets a key signature of its own.
+MIN_SIGNATURE_BARS = 8
+_PITCH_CLASS = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+# Semitones from a mode's tonic up to the tonic of the major scale with the same notes.
+_PARENT_MAJOR = {
+    "major": 0,
+    "dorian": 10,
+    "phrygian": 8,
+    "lydian": 7,
+    "mixolydian": 5,
+    "minor": 3,
+    "locrian": 1,
+    "harmonic_minor": 3,
+    "phrygian_dominant": 8,
+}
+
+
+def signature_of(key: str) -> int | None:
+    """Key signature (sharps > 0, flats < 0) for a key such as ``"F:major"`` or ``"C#:dorian"``.
+
+    A mode takes the signature of the major scale that has its notes, which needs the fewest
+    accidentals; the two minor-based modes take the signature of their natural minor.
+    """
+    tonic, _, mode = key.partition(":")
+    if not tonic or tonic[0] not in _PITCH_CLASS or mode not in _PARENT_MAJOR:
+        return None
+    pitch_class = _PITCH_CLASS[tonic[0]] + tonic.count("#") - tonic.count("b")
+    fifths = ((pitch_class + _PARENT_MAJOR[mode]) * 7) % 12
+    return fifths - 12 if fifths > 6 else fifths
+
+
+def bar_signatures(keys: list[dict], bar_starts: list[float], min_bars: int = MIN_SIGNATURE_BARS) -> list[int | None]:
+    """Key signature of each bar, from the key tracker's segments (``start``, ``end``, ``key``).
+
+    The tracker follows the music's key closely, including excursions of a few bars that
+    a printed score writes with accidentals. A key held for fewer than ``min_bars`` bars
+    keeps the signature in force before it (or, at the very start, the one that follows).
+    """
+    segments = [(float(k["start"]), signature_of(str(k.get("key", "")))) for k in keys]
+    segments.sort()
+    per_bar: list[int | None] = []
+    for start in bar_starts:
+        current = None
+        for begins, signature in segments:
+            if begins <= start + 1e-3:
+                current = signature
+        per_bar.append(current if current is not None else (segments[0][1] if segments else None))
+    runs: list[list] = []  # [signature, bars]
+    for signature in per_bar:
+        if runs and runs[-1][0] == signature:
+            runs[-1][1] += 1
+        else:
+            runs.append([signature, 1])
+    merged: list[list] = []
+    for signature, count in runs:
+        if merged and (count < min_bars or signature is None or merged[-1][0] == signature):
+            merged[-1][1] += count
+        else:
+            merged.append([signature, count])
+    if len(merged) > 1 and (merged[0][1] < min_bars or merged[0][0] is None):
+        merged[1][1] += merged[0][1]
+        del merged[0]
+    return [signature for signature, count in merged for _ in range(count)]
+
+
+def follow_tracker(model_keys: list[int], tracked: list[int | None]) -> list[int]:
+    """Songs: the key tracker hears the recording, the score model only the arrangement. Trust the tracker."""
+    return [model if heard is None else heard for model, heard in zip(model_keys, tracked, strict=True)]
+
+
+def correct_regions(model_keys: list[int], tracked: list[int | None]) -> list[int]:
+    """Solo piano: keep the score model's key regions (it reads the real notes and knows how
+    editions print them, e.g. no new signature for a sonata's second theme), but where the
+    tracker hears one and the same signature throughout a region, that signature is used."""
+    out = list(model_keys)
+    start = 0
+    while start < len(out):
+        end = start
+        while end < len(out) and model_keys[end] == model_keys[start]:
+            end += 1
+        heard = {t for t in tracked[start:end] if t is not None}
+        if len(heard) == 1:
+            out[start:end] = [heard.pop()] * (end - start)
+        start = end
+    return out
+
+
+LEAD_IN_BEATS = 1.25  # how far before the first downbeat an accompaniment lead-in may begin
+
+
+def lead_in_to_settle(note_starts: list[float], annotation: dict) -> float | None:
+    """The first downbeat, if the notes before it are only an accompaniment lead-in; else None.
+
+    Arrangements often strike a bass note or chord up to a beat ahead of the first
+    downbeat. Written literally that makes a pickup bar, which the score model handles
+    badly (it writes the pickup at double speed and swallows the start of bar 1). When the
+    melody itself only starts on the downbeat, the lead-in is moved onto the downbeat. A
+    melody that begins before the downbeat is a real anacrusis and is left alone.
+    """
+    downbeats, beats = annotation.get("downbeats") or [], annotation.get("beats") or []
+    if not downbeats or len(beats) < 2 or not note_starts:
+        return None
+    first = float(downbeats[0])
+    beat = float(np.median(np.diff(beats)))
+    earliest = min(note_starts)
+    if not (first - LEAD_IN_BEATS * beat <= earliest < first - 1e-3):
+        return None
+    melody = annotation.get("melody") or []
+    if melody:
+        if min(float(n["start"]) for n in melody) < first - 0.25 * beat:
+            return None
+    elif earliest < first - 0.5 * beat:
+        return None  # no melody to consult: only a slight anticipation is settled
+    return first
+
+
 def _bar_beats(annotation: dict) -> list[list[float]]:
     """The beat times inside each bar."""
     beats = np.asarray(annotation.get("beats") or [], dtype=float)

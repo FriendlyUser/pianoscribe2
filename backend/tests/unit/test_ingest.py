@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -183,3 +184,31 @@ def test_sandbox_sets_no_new_privs_and_limits(tmp_path: Path) -> None:
     )
     result = run_sandboxed([sys.executable, "-c", script], cwd=tmp_path, timeout=20, limits=limits())
     assert result.stdout.split() == ["1", "64", "0", "5", str(512 * 1024 * 1024)]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+def test_decoding_leaves_the_signal_untouched(tmp_path: Path, settings: Settings) -> None:
+    """The models read the recording as distributed: digital silence must stay digital silence."""
+    import numpy as np
+    import soundfile as sf
+
+    from app.ingest import media
+
+    rate = 44_100
+    t = np.arange(rate) / rate
+    tone = (0.5 * np.sin(2 * np.pi * 440 * t) + 0.01).astype(np.float32)  # a tone with a DC offset
+    audio = np.concatenate([np.zeros(rate // 2, dtype=np.float32), tone])
+    stereo = np.stack([audio, audio], axis=1)
+    source = tmp_path / "in.wav"
+    sf.write(source, stereo, rate, subtype="PCM_16")
+    target = tmp_path / "work" / "audio.wav"
+    target.parent.mkdir()
+
+    seconds = media.decode_audio(source, target, settings)
+
+    original, _ = sf.read(source, dtype="int16")
+    decoded, decoded_rate = sf.read(target, dtype="int16")
+    assert decoded_rate == rate and abs(seconds - 1.5) < 0.01
+    assert not decoded[: rate // 2].any()  # the leading silence is still exact zeros
+    assert np.array_equal(decoded, original)  # no gain change, no DC removal
+    assert not list(target.parent.glob("*.decoded.wav"))

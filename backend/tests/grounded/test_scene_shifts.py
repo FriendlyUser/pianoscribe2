@@ -41,8 +41,8 @@ def scores(produced: Produced) -> ArrangementScores:
 
 def test_overall_agreement_with_the_human_arrangement(scores: ArrangementScores) -> None:
     # The first two generations of this project scored 0.40 and 0.73 on the same reference.
-    # Arrangements are sampled: seven of this recording scored between 0.82 and 0.86.
-    assert scores.overall >= 0.80, scores
+    # Arrangements are sampled: ten of this recording scored between 0.84 and 0.88.
+    assert scores.overall >= 0.82, scores
 
 
 def test_the_melody_is_carried_throughout(scores: ArrangementScores) -> None:
@@ -61,18 +61,22 @@ def test_bass_line(scores: ArrangementScores) -> None:
     assert scores.bass_accuracy >= 0.62, scores
 
 
-def test_the_opening_key_is_right(produced: Produced) -> None:
-    assert read_musicxml(produced.score).bars[0].fifths == -1  # F major
-
-
-@pytest.mark.xfail(
-    strict=False,
-    reason="Known limit: the piece changes key three times (F, D, C, F) and the score model does not "
-    "follow every change in every arrangement. Across seven arrangements of this recording the share "
-    "of bars under the right key signature ranged from 0.42 to 0.93.",
-)
-def test_every_key_change_is_followed(scores: ArrangementScores) -> None:
+def test_key_changes_are_followed(scores: ArrangementScores, produced: Produced) -> None:
+    # F, (D for eight bars), C, F. The key tracker hears the changes in the recording; the
+    # eight bars of D major are too short for a signature of their own under our rule.
     assert scores.key_accuracy >= 0.9, scores
+    signatures = [bar.fifths for bar in read_musicxml(produced.score).bars]
+    assert signatures[0] == -1 and signatures[40] == 0 and signatures[-1] == -1
+
+
+def test_the_first_bar_states_the_opening_phrase(produced: Produced) -> None:
+    # Bar 1 of the published arrangement: A D E F G in eighth notes from the downbeat.
+    score = read_musicxml(produced.score)
+    first_bar = [(float(n.pos), n.pitch % 12) for n in score.notes if n.bar == 0]
+    wanted = [(0.0, 9), (0.5, 2), (1.0, 4), (1.5, 5), (2.0, 7)]
+    found = [any(abs(pos - at) <= 0.13 and pc == pitch_class for pos, pc in first_bar) for at, pitch_class in wanted]
+    assert score.bars[0].length == 3  # a full 6/8 bar, no pickup
+    assert sum(found) >= 4, first_bar
 
 
 def test_the_arrangement_is_playable_density(scores: ArrangementScores, produced: Produced) -> None:

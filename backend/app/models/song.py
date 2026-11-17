@@ -82,13 +82,24 @@ def transcribe_song(audio: Path, out_midi: Path, settings: Settings, progress: P
     return out_midi
 
 
-def generate_covers(source_midi: Path, audio: Path, out_dir: Path, settings: Settings) -> CoverResult:
+def generate_covers(
+    source_midi: Path,
+    audio: Path,
+    out_dir: Path,
+    settings: Settings,
+    *,
+    seed: int | None = None,
+    annotation: Path | None = None,
+) -> CoverResult:
     """Stage 2: generate piano covers of the song on the beat grid of the recording.
 
     Generation is sampled, so several candidates are produced in one run (same
-    analysis, same loaded model); the caller keeps the most faithful one.
+    analysis, same loaded model); the caller keeps the most faithful one. ``seed``
+    overrides the configured seed, and ``annotation`` reuses the beat and melody
+    analysis of an earlier run instead of repeating it.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    reuse: list[str | Path] = ["--sheetsage", annotation] if annotation is not None else []
     for stale in out_dir.glob("*.mid"):
         stale.unlink()
     run_step(
@@ -126,16 +137,17 @@ def generate_covers(source_midi: Path, audio: Path, out_dir: Path, settings: Set
             "--top-p",
             str(settings.cover_top_p),
             "--seed",
-            str(settings.cover_seed),
+            str(settings.cover_seed if seed is None else seed),
+            *reuse,
         ],  # fmt: skip
         cwd=settings.cover_dir,
         timeout=settings.arrange_timeout_seconds,
     )
     candidates = sorted(out_dir.glob("*.mid"))
-    annotation = out_dir / f"{audio.stem}.sheetsage.json"
-    if not candidates or not annotation.is_file():
+    produced = annotation if annotation is not None else out_dir / f"{audio.stem}.sheetsage.json"
+    if not candidates or not produced.is_file():
         raise RuntimeError("the cover model produced no output")
-    return CoverResult(candidates=candidates, annotation=annotation)
+    return CoverResult(candidates=candidates, annotation=produced)
 
 
 def write_score(
@@ -146,6 +158,7 @@ def write_score(
     settings: Settings,
     *,
     title: str,
+    keys: Path | None = None,
     progress: Callable[[float], None] | None = None,
 ) -> Path:
     """Stage 3: write a performance as MusicXML (see ``model_scripts/notate_cover.py``).
@@ -163,6 +176,10 @@ def write_score(
 
     partial = out_xml.with_suffix(".partial.musicxml")
     chords: list[str | Path] = ["--chords", source_midi] if source_midi is not None else []
+    # A song's key signatures follow the key tracker; a solo recording's are only corrected by it.
+    tracked: list[str | Path] = (
+        ["--keys", keys, "--key-policy", "follow" if source_midi is not None else "correct"] if keys else []
+    )
     run_step(
         "notate",
         [
@@ -179,6 +196,7 @@ def write_score(
             "--title",
             title,
             *chords,
+            *tracked,
         ],  # fmt: skip
         cwd=settings.cover_dir,
         timeout=settings.notate_timeout_seconds,
@@ -273,4 +291,37 @@ def annotate_audio(audio: Path, out_json: Path, settings: Settings) -> Path:
     )
     if not out_json.is_file():
         raise RuntimeError("the beat tracker produced no annotation")
+    return out_json
+
+
+def track_keys(audio: Path, out_json: Path, settings: Settings) -> Path:
+    """Keys and key changes of ``audio`` (SheetSage2-Refined's key tracker), as ``{"keys": [...]}``."""
+    scratch = out_json.parent / "_keys"
+    scratch.mkdir(parents=True, exist_ok=True)
+    device = [] if settings.model_device == "auto" else ["--device", settings.model_device]
+    try:
+        run_step(
+            "keys",
+            [
+                settings.cover_python,
+                "-m",
+                "sheetsage2_refined.keys",
+                audio,
+                "--out-dir",
+                scratch,
+                "--memory-fraction",
+                str(settings.analysis_memory_fraction),
+                *device,
+            ],  # fmt: skip
+            cwd=settings.cover_dir,
+            timeout=settings.arrange_timeout_seconds,
+        )
+        produced = scratch / f"{audio.stem}.keys.json"
+        if not produced.is_file():
+            raise RuntimeError("the key tracker produced no output")
+        produced.replace(out_json)
+    finally:
+        for leftover in scratch.glob("*"):
+            leftover.unlink()
+        scratch.rmdir()
     return out_json

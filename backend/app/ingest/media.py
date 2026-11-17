@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.config import Settings
 from app.errors import JobError
-from app.ingest.audio import peak_normalize, read_wav, write_wav
+from app.ingest.audio import read_wav
 from app.ingest.sandbox import ResourceLimits, SandboxError, run_sandboxed
 from app.ingest.signatures import PROBE_FORMATS, MediaKind
 from app.logging import get_logger
@@ -89,11 +89,15 @@ def probe(path: Path, settings: Settings, *, expected: MediaKind | None = None) 
     )
 
 
-def decode_and_normalize(source: Path, target: Path, settings: Settings) -> float:
-    """Decode the first audio stream to 44.1 kHz stereo PCM and peak-normalise it.
+def decode_audio(source: Path, target: Path, settings: Settings) -> float:
+    """Decode the first audio stream to 44.1 kHz stereo 16-bit PCM, otherwise untouched.
 
-    Returns the decoded duration in seconds. Decoding (the untrusted step)
-    happens in the sandbox; normalisation then operates on plain PCM.
+    Returns the decoded duration in seconds. Decoding (the untrusted step) happens in
+    the sandbox. The signal is deliberately not processed any further: the models were
+    trained on recordings as they are distributed, and the arrangement model in
+    particular reads the digital silence at the start of a track. Removing the DC offset,
+    as an earlier version did, turned that silence into a constant one-bit offset and
+    the arrangements then began their first phrase a beat late.
     """
     decoded = target.with_suffix(".decoded.wav")
     try:
@@ -143,12 +147,14 @@ def decode_and_normalize(source: Path, target: Path, settings: Settings) -> floa
 
     try:
         audio, sample_rate = read_wav(decoded)
-    finally:
+    except Exception:
         decoded.unlink(missing_ok=True)
+        raise
     if audio.shape[-1] < sample_rate // 2:
+        decoded.unlink(missing_ok=True)
         raise JobError("empty_audio", "The audio is empty or too short to transcribe.")
-    normalized = peak_normalize(audio)
-    if float(abs(normalized).max()) < 1e-4:
+    if float(abs(audio).max()) < 1e-4:
+        decoded.unlink(missing_ok=True)
         raise JobError("silent_audio", "The audio track is silent.")
-    write_wav(target, normalized, sample_rate)
+    decoded.replace(target)
     return float(audio.shape[-1]) / sample_rate
