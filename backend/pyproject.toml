@@ -1,0 +1,31 @@
+[project]
+name = "pianoscribe"
+version = "0.1.0"
+description = "Audio to piano sheet music"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra -q -m 'not grounded'"
+markers = [
+    "grounded: accuracy against reference scores and recordings; runs the real models (slow, GPU strongly recommended)",
+]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S", "BLE", "SIM"]
+ignore = ["E501", "S101", "S603", "S607", "SIM108"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true

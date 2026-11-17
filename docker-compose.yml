@@ -1,0 +1,97 @@
+# One-command local stack:  docker compose up --build
+# GPU:                      docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+name: pianoscribe2
+
+x-backend-env: &backend-env
+  PS_REDIS_URL: redis://redis:6379/0
+  PS_DATA_DIR: /data
+  PS_MODELS_DIR: /models
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: { context: ./backend, target: api }
+    env_file: [{ path: .env, required: false }]
+    environment: *backend-env
+    volumes: [app-data:/data]
+    tmpfs: ["/tmp"]
+    depends_on: { redis: { condition: service_healthy } }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    <<: *hardening
+
+  worker:
+    build: { context: ./backend, target: worker }
+    env_file: [{ path: .env, required: false }]
+    environment: *backend-env
+    volumes: [app-data:/data, model-cache:/models]
+    # Scratch space for matplotlib, numba and the JS runtime.
+    tmpfs: ["/tmp:exec,size=1g"]
+    # The models share tensors between loader processes.
+    shm_size: 1g
+    depends_on: { redis: { condition: service_healthy } }
+    # Outer resource envelope for untrusted media parsing and inference.
+    mem_limit: "${PS_WORKER_MEMORY:-12g}"
+    pids_limit: 1024
+    stop_grace_period: 30s
+    <<: *hardening
+
+  janitor:
+    build: { context: ./backend, target: api }
+    command: ["python", "-m", "app.storage.janitor"]
+    env_file: [{ path: .env, required: false }]
+    environment: *backend-env
+    volumes: [app-data:/data]
+    depends_on: { redis: { condition: service_healthy } }
+    <<: *hardening
+
+  web:
+    build: { context: ./frontend }
+    # Bound to localhost by default: the app has no authentication.
+    ports: ["${PS_WEB_BIND:-127.0.0.1}:${PS_WEB_PORT:-8080}:8080"]
+    depends_on: { api: { condition: service_healthy } }
+    tmpfs: ["/tmp"]
+    <<: *hardening
+
+  # docker compose --profile test run --rm tests                 unit tests
+  # docker compose --profile test run --rm tests pytest -m grounded   accuracy tests with the real models
+  tests:
+    profiles: [test]
+    build: { context: ./backend, target: dev }
+    environment:
+      PS_MODELS_DIR: /models
+      PS_DATA_DIR: /tmp/data
+      PS_LOG_FORMAT: console
+      PS_GROUNDED_DATA: /grounded
+    volumes:
+      - model-cache:/models
+      - ./samples:/samples:ro
+      # Optional reference recordings and private references (see backend/eval/README.md).
+      - ./backend/eval/data:/grounded:ro
+      - ./backend/eval/private:/app/eval/private:ro
+    tmpfs: ["/tmp:exec,size=2g"]
+    shm_size: 1g
+
+volumes:
+  redis-data:
+  app-data:
+  model-cache:

@@ -1,0 +1,11 @@
+# The worker's own environment: ingestion, orchestration and engraving.
+# The models run in separate environments (see the Dockerfile), so there is no
+# PyTorch here.
+-r api.in
+numpy
+soundfile
+mido
+verovio
+cairosvg
+pypdf
+yt-dlp[default]

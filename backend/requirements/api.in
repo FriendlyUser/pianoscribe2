@@ -1,0 +1,8 @@
+# Runtime dependencies shared by the API, worker and janitor.
+fastapi
+uvicorn[standard]
+pydantic>=2
+pydantic-settings
+redis>=5
+dramatiq[redis]>=2
+structlog

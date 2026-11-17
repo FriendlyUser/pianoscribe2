@@ -1,0 +1,11 @@
+# Test and evaluation tooling, installed on top of the worker environment.
+-c worker.txt
+pytest
+pytest-asyncio
+httpx
+fakeredis[lua]
+ruff
+mypy
+# Grounded evaluation (eval/): note-level scores against reference MIDI.
+mir_eval
+pretty_midi

@@ -1,0 +1,198 @@
+# PianoScribe 2
+
+Turn a recording into piano sheet music, with accuracy measured against ground truth.
+
+Upload an audio/video file (MP3, WAV, MP4, MOV) or paste a YouTube link:
+
+- a **song** (band, vocals, orchestra, game soundtrack) is *arranged* for piano: its melody, bass
+  and harmony rewritten as a part two hands can play;
+- a **solo piano** recording is *transcribed*: the notes that were played, written down.
+
+Either way you get an engraved two-staff score to play back in the browser, print, or download as
+PDF, standalone HTML, MusicXML and MIDI.
+
+This is a ground-up rebuild of [PianoScribe](https://github.com/FriendlyUser/pianoscribe). The
+service around the music (API, job queue, sandboxed ingestion, engraving, web UI) is the same; every
+musical stage is new, built on current models from Hugging Face, and held to tests against
+reference scores and reference recordings.
+
+## How accurate is it?
+
+Measured, not estimated. The full method is in [backend/eval/README.md](backend/eval/README.md) and
+the model comparison in [docs/MODELS.md](docs/MODELS.md).
+
+**Arranging a song**, against a published human piano arrangement of the same piece
+("Scene Shifts There", 119 bars, 6/8, three key changes):
+
+| | v1 first release | v1 second pass | **PianoScribe 2** |
+|---|---|---|---|
+| Overall agreement | 0.40 | 0.73 | **0.83** from the YouTube link (0.82 to 0.86 over 14 arrangements) |
+
+The arrangement is sampled, so the same song can come out a little differently; fourteen
+arrangements of the benchmark song all landed between 0.82 and 0.86. The run through the full
+stack from the YouTube link scored 0.83:
+
+| Melody notes present | Rhythm | Place in the bar | Bass | Time signature | Bars under the right key signature |
+|---|---|---|---|---|---|
+| 91% | 88% | 90% | 74% | 6/8, correct | 42%: the return to F major for the last 61 bars is missed, and an 8-bar passage in D major gets one sharp instead of two |
+
+**Transcribing solo piano:**
+
+| Ground truth | Result |
+|---|---|
+| MAESTRO v3 test recordings (Disklavier MIDI), six pieces | note onset F1 0.978 (onset and length: 0.874) |
+| Synthesized piece with every note known | all notes, key, meter, tempo and bar count exact |
+| Für Elise, 32-second recording against the printed score (bars 1-9) | every melody note, the rhythm, the bar lines and the bass correct; written in 3/4 with doubled note values instead of 3/8, and with one sharp too many in the key signature |
+
+One arrangement benchmark and a handful of piano pieces are a small evaluation. They are enough to
+catch regressions and to compare approaches; they are not a claim about every genre. See
+[Known limitations](ARCHITECTURE.md#known-limitations).
+
+## Licence of the models: non-commercial
+
+Two of the three models this project downloads (SheetSage2-Refined and tsumugi-piano-cover-v2,
+which includes the score writer) publish their weights under **CC BY-NC 4.0**, and every score
+goes through both. You may therefore use this system for personal, research and other
+non-commercial purposes only. The code in this repository does not change that.
+Details and attributions: [docs/MODELS.md](docs/MODELS.md#licences).
+
+## Quick start
+
+Prerequisites: Docker 24+ with Compose v2, an NVIDIA GPU with 8 GB or more and the NVIDIA Container
+Toolkit, about 25 GB of free disk (the worker image is 11 GB, and 4.5 GB of weights download on the
+first job).
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
+Then open <http://localhost:8080>. Try `samples/fur_elise_opening.mp3` with "This is already solo
+piano" ticked.
+
+Without a GPU, `docker compose up --build` runs the same code on the CPU. It works, but a song then
+takes a large multiple of the GPU time; treat it as a way to check the installation.
+
+Measured on an RTX 4060 (8 GB) with the weights already downloaded: a 30-second piano clip in
+about 1.5 minutes, a 4.4-minute song from a YouTube link in 5 to 6 minutes. Most of that is the model
+stages loading and running one after another.
+
+Check the installation from inside the worker:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm worker python -m app.cli doctor
+```
+
+### What runs
+
+| Service   | Purpose                                                               |
+|-----------|-----------------------------------------------------------------------|
+| `web`     | nginx: the React UI, and a reverse proxy for `/api` (port 8080)        |
+| `api`     | FastAPI: validation, streamed uploads, job submission, progress (SSE)  |
+| `worker`  | Dramatiq worker: ingestion sandbox, model stages, engraving            |
+| `janitor` | Purges raw media, stale work files and expired results                 |
+| `redis`   | Job queue, job state, progress pub/sub (append-only persistence)       |
+
+Storage is two named volumes: `app-data` (uploads, work files, finished scores) and `model-cache`
+(model weights).
+
+## Tests
+
+```bash
+# Unit tests (a few seconds; no models needed)
+docker compose --profile test run --rm --build tests
+
+# Grounded accuracy tests: the real models against reference scores and recordings (about 10 minutes)
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile test run --rm tests pytest -m grounded
+```
+
+The grounded suite always runs the synthesized-piano and Für Elise tests. Two more need material
+that is not in the repository and are skipped without it:
+
+```bash
+# MAESTRO note accuracy: fetch six test recordings (~125 MB, CC BY-NC-SA 4.0) into backend/eval/data
+docker compose --profile test run --rm --user "$(id -u):$(id -g)" -v "$PWD/backend/eval/data:/out" tests python -m eval.fetch_maestro /out/maestro
+```
+
+The song-arrangement benchmark needs the recording at `backend/eval/data/scene_shifts_there.wav`
+and its reference at `backend/eval/private/scene_shifts_there.json`. The reference is read from a
+published arrangement of a copyrighted work, so it is not committed.
+
+## Using it without the web UI
+
+```bash
+# A local file straight to ./out (no queue, no Redis). Add --solo for solo piano.
+mkdir -p out
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm -T \
+  -v "$PWD/samples:/in:ro" worker sh -c \
+  'python -m app.cli transcribe /in/fur_elise_opening.mp3 /tmp/out --solo >&2 && tar -C /tmp/out -cf - .' \
+  | tar -xf - -C out
+
+# HTTP API
+curl -X POST --data-binary @samples/fur_elise_opening.mp3 \
+  "http://localhost:8080/api/jobs/upload?filename=fur_elise_opening.mp3&solo_piano=true"
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"url": "https://www.youtube.com/watch?v=VIDEO_ID", "solo_piano": false}' \
+  http://localhost:8080/api/jobs/youtube
+curl -N http://localhost:8080/api/jobs/JOB_ID/events          # live progress (Server-Sent Events)
+curl -O "http://localhost:8080/api/jobs/JOB_ID/artifacts/score.pdf?download=true"
+```
+
+Artifacts per job: `score.pdf`, `score.html`, `score.musicxml`, `score.mid` (the score as MIDI),
+`performance.mid` (the piano part before notation, with original timing and dynamics) and, for
+songs, `transcription.mid` (every instrument the transcriber heard).
+
+## Configuration
+
+Environment variables with the `PS_` prefix; copy `.env.example` to `.env`. The most useful:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PS_WEB_PORT` / `PS_WEB_BIND` | `8080` / `127.0.0.1` | Host port and interface of the UI (localhost only by default; there is no login) |
+| `PS_MAX_UPLOAD_MB` | `200` | Upload size limit (enforced while streaming) |
+| `PS_MAX_DURATION_SECONDS` | `600` | Longest audio accepted |
+| `PS_YOUTUBE_ENABLED` | `true` | Allow YouTube links |
+| `PS_WORKER_MEMORY` | `12g` | Memory ceiling of the worker container |
+| `PS_MODEL_DEVICE` | `auto` | `auto`, `cuda` or `cpu` |
+| `PS_TSUMUGI_WINDOW_BATCH_SIZE` | `2` | Transcription batch size; 2 fits an 8 GB card, raise it on larger ones |
+| `PS_COVER_SOURCE_CFG` | `2.0` | How closely an arrangement follows the original (higher: closer) |
+| `PS_COVER_DENSITY` | `1.0` | Note density of arrangements |
+| `PS_COVER_SEED` | `0` | Arrangements are sampled; a fixed seed makes them repeatable |
+| `PS_PAGE_SIZE` | `A4` | `A4` or `Letter` |
+
+The full list is in [backend/app/config.py](backend/app/config.py).
+
+## Operations
+
+```bash
+docker compose logs -f worker                                   # structured JSON logs, one job_id per job
+docker compose exec worker python -m app.cli dead-letters        # jobs that exhausted their retries
+docker compose exec worker python -m app.cli requeue JOB_ID      # retry a failed job
+docker compose exec janitor python -m app.storage.janitor --once # run a retention pass now
+```
+
+## Repository layout
+
+```
+backend/
+  app/
+    api/        HTTP routes, schemas, SSE
+    ingest/     magic-byte checks, streamed uploads, sandboxed ffmpeg and yt-dlp
+    jobs/       job model, dedupe keys, Redis store, Dramatiq queue, idempotent runner
+    models/     model stages as subprocesses: transcription, arrangement, notation
+    engrave/    Verovio rendering, PDF, standalone HTML, score summary
+    pipeline/   stage orchestration with checkpoints and timings
+    storage/    artifact store, retention janitor
+  model_scripts/  drivers that run inside the model environments, and the score fixes
+  eval/         grounded evaluation: metrics, references, data fetchers
+  tests/        unit/ and grounded/
+  requirements/ *.in sources, hash-pinned *.txt locks, the cover model's environment
+docs/MODELS.md  model survey, benchmarks, licences
+frontend/       React + TypeScript UI, nginx config
+samples/        test recordings
+```
+
+## Responsible use
+
+Only transcribe recordings you have the right to use. YouTube downloads are subject to YouTube's
+terms; the feature can be switched off with `PS_YOUTUBE_ENABLED=false`. An arrangement of a
+copyrighted song is a derivative of that song.

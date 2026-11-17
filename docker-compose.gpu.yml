@@ -1,0 +1,13 @@
+# GPU override: gives the worker (and the test container) the NVIDIA GPU.
+# Requires the NVIDIA Container Toolkit on the host. The image is the same one:
+# the model environments ship CUDA builds of PyTorch that also run on the CPU.
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - { driver: nvidia, count: 1, capabilities: [gpu] }
+
+services:
+  worker: *gpu
+  tests: *gpu
