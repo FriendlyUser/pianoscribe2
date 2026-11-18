@@ -99,3 +99,10 @@ def test_hands_are_split_at_the_right_place(ode: Produced) -> None:
     lower = [n.pitch for n in score.notes if n.staff == 2]
     assert upper and lower
     assert min(upper) >= 67 and max(lower) <= 57  # melody G4..D5 above, accompaniment G2..A3 below
+
+
+def test_the_score_has_the_notes_that_were_played_and_no_others(ode: Produced) -> None:
+    from eval.fidelity import note_fidelity
+
+    fidelity = note_fidelity(ode.directory / "performance.mid", read_musicxml(ode.score))
+    assert fidelity.kept >= 0.98 and fidelity.backed >= 0.98, fidelity

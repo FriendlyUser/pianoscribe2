@@ -83,3 +83,10 @@ def test_the_arrangement_is_playable_density(scores: ArrangementScores, produced
     assert 6 <= scores.notes_per_bar <= 16, scores
     assert produced.result.mode == "arrangement"
     assert produced.result.melody_fidelity is not None and produced.result.melody_fidelity >= 0.7
+
+
+def test_the_score_has_the_notes_of_the_arrangement_and_no_others(produced: Produced) -> None:
+    from eval.fidelity import note_fidelity
+
+    fidelity = note_fidelity(produced.directory / "performance.mid", read_musicxml(produced.score))
+    assert fidelity.kept >= 0.97 and fidelity.backed >= 0.97, fidelity

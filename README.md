@@ -44,6 +44,10 @@ YouTube link scored 0.85:
 | Synthesized piece with every note known | all notes, key, meter, tempo and bar count exact |
 | Für Elise, 32-second recording against the printed score (bars 1-9) | overall 0.95: the melody, rhythm, bar lines, bass and key signature correct; written in 3/4 with doubled note values instead of 3/8 |
 
+A field test on four more recordings from anime and visual novels (two songs, two piano solos)
+had key, meter and tempo right on all four; the method and numbers are in
+[backend/eval/README.md](backend/eval/README.md#field-test-2026-11-17).
+
 One arrangement benchmark and a handful of piano pieces are a small evaluation. They are enough to
 catch regressions and to compare approaches; they are not a claim about every genre. See
 [Known limitations](ARCHITECTURE.md#known-limitations).
@@ -103,6 +107,12 @@ docker compose --profile test run --rm --build tests
 
 # Grounded accuracy tests: the real models against reference scores and recordings (about 10 minutes)
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile test run --rm tests pytest -m grounded
+```
+
+To check any finished job against its recording, without a reference score:
+
+```bash
+docker compose --profile test run --rm -v "$PWD/my-job:/job:ro" tests python -m eval.field_check /job/recording.wav /job
 ```
 
 The grounded suite always runs the synthesized-piano and Für Elise tests. Two more need material

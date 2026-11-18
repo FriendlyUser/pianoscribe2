@@ -97,6 +97,10 @@ class Settings(BaseSettings):
     # little on an 8 GB card).
     analysis_memory_fraction: float = 0.95
 
+    # Solo piano: a recording longer than this many bars is written in sections of at most this
+    # size. On long solo pieces the score model starts to write notes twice (0 disables).
+    solo_section_bars: int = 64
+
     page_size: Literal["A4", "Letter"] = "A4"
 
     # --- derived --------------------------------------------------------

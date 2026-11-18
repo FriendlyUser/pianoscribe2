@@ -177,3 +177,62 @@ def test_a_pickup_bar_is_read_against_the_bar_line_that_follows(tmp_path: Path) 
     )
     line = top_line(read_musicxml(path))
     assert [(pitch, round(share, 3)) for _, pitch, share, _ in line] == [(76, 0.667), (69, 0.0)]
+
+
+def test_note_fidelity_counts_invented_and_lost_notes(tmp_path: Path) -> None:
+    import mido
+
+    from eval.fidelity import note_fidelity
+
+    score = read_musicxml(write_score(tmp_path / "s.xml", TUNE[:4]))
+    pitches = [n.pitch for n in score.notes]
+
+    def midi(name: str, notes: list[int]) -> Path:
+        track = mido.MidiTrack()
+        for pitch in notes:
+            track.append(mido.Message("note_on", note=pitch, velocity=80, time=0))
+            track.append(mido.Message("note_off", note=pitch, velocity=0, time=120))
+        file = mido.MidiFile()
+        file.tracks.append(track)
+        file.save(tmp_path / name)
+        return tmp_path / name
+
+    exact = note_fidelity(midi("exact.mid", pitches), score)
+    assert exact.kept == 1.0 and exact.backed == 1.0 and exact.extra == 0.0
+    # The score has every note twice as often as the performance: half of it was never played.
+    doubled = note_fidelity(midi("half.mid", pitches[::2]), score)
+    assert doubled.kept == 1.0 and doubled.backed < 0.6 and doubled.extra > 0.8
+    lost = note_fidelity(midi("more.mid", pitches + pitches), score)
+    assert lost.kept == 0.5 and lost.backed == 1.0
+
+
+def test_harmony_agreement_tells_the_right_notes_from_transposed_ones(tmp_path: Path) -> None:
+    import mido
+
+    pytest.importorskip("scipy")
+    from eval.field_check import harmony_agreement
+    from tests import synth
+
+    recording = synth.ode_to_joy_wav(tmp_path / "ode.wav")
+    seconds_per_beat = 60.0 / synth.ODE_BPM
+    events = []
+    for note in synth.ode_to_joy():
+        start = 0.25 + note.start_beat * seconds_per_beat
+        events += [
+            (start, "note_on", note.pitch),
+            (start + note.duration_beats * seconds_per_beat * 0.95, "note_off", note.pitch),
+        ]
+    track, now = mido.MidiTrack(), 0.0
+    track.append(mido.MetaMessage("set_tempo", tempo=500_000))
+    for when, kind, pitch in sorted(events, key=lambda e: (e[0], e[1] == "note_on")):
+        ticks = round((when - now) * 960)
+        track.append(mido.Message(kind, note=pitch, velocity=80, time=ticks))
+        now += ticks / 960
+    midi = mido.MidiFile(ticks_per_beat=480)
+    midi.tracks.append(track)
+    midi.save(tmp_path / "truth.mid")
+
+    result = harmony_agreement(recording, tmp_path / "truth.mid")
+    assert result["agreement"] > 0.8, result
+    assert result["transposed_mean"] < result["agreement"] - 0.3, result
+    assert result["transposed_best"] < result["agreement"] - 0.15, result

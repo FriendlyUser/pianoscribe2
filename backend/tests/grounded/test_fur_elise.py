@@ -10,6 +10,7 @@ from collections.abc import Callable
 import pytest
 
 from eval.arrangement import ArrangementScores, Reference, evaluate
+from eval.fidelity import note_fidelity
 from eval.scoreio import read_musicxml
 
 from .conftest import REFERENCES, SAMPLES, Produced
@@ -18,11 +19,15 @@ pytestmark = pytest.mark.grounded
 
 
 @pytest.fixture(scope="module")
-def scores(produce: Callable[..., Produced]) -> ArrangementScores:
+def produced(produce: Callable[..., Produced]) -> Produced:
     recording = SAMPLES / "fur_elise_opening.mp3"
     if not recording.is_file():
         pytest.skip(f"{recording} is missing")
-    produced = produce(recording, solo=True, title="Für Elise")
+    return produce(recording, solo=True, title="Für Elise")
+
+
+@pytest.fixture(scope="module")
+def scores(produced: Produced) -> ArrangementScores:
     return evaluate(Reference.load(REFERENCES / "fur_elise_opening.json"), read_musicxml(produced.score))
 
 
@@ -58,3 +63,8 @@ def test_the_key_signature_is_a_minor(scores: ArrangementScores) -> None:
 )
 def test_the_time_signature_is_three_eight(scores: ArrangementScores) -> None:
     assert scores.meter_correct, scores
+
+
+def test_the_score_has_the_notes_that_were_played_and_no_others(produced: Produced) -> None:
+    fidelity = note_fidelity(produced.directory / "performance.mid", read_musicxml(produced.score))
+    assert fidelity.kept >= 0.97 and fidelity.backed >= 0.97, fidelity

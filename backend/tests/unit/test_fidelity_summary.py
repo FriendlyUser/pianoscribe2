@@ -126,3 +126,22 @@ def test_opening_fidelity_separates_a_rushed_opening_from_a_sound_one(tmp_path: 
     assert opening_fidelity(sound, annotation) == 1.0
     assert opening_fidelity(rushed, annotation) < 0.8
     assert opening_fidelity(sound, {"downbeats": [0.54], "melody": annotation["melody"]}) is None  # too short to judge
+
+
+def test_cjk_text_gets_a_font_that_has_the_glyphs() -> None:
+    from app.engrave.pdf import with_cjk_font
+
+    svg = (
+        '<text><tspan class="text"><tspan font-size="607px">光るなら／Goose house</tspan></tspan></text>'
+        '<text><tspan font-size="405px" font-family="Times">Piano</tspan></text>'
+        '<text><tspan font-family="Times" font-size="405px">【Piano】夏影</tspan></text>'
+    )
+    fixed = with_cjk_font(svg, "Noto Serif CJK JP")
+    assert '<tspan font-size="607px" font-family="Noto Serif CJK JP">光るなら／Goose house</tspan>' in fixed
+    assert '<tspan font-size="405px" font-family="Times">Piano</tspan>' in fixed  # Latin text is left alone
+    assert '<tspan font-size="405px" font-family="Noto Serif CJK JP">【Piano】夏影</tspan>' in fixed
+    assert with_cjk_font(svg, None) == svg  # no such font installed: nothing to do
+    assert (
+        with_cjk_font("<text><tspan>Ode to Joy</tspan></text>", "Noto Serif CJK JP")
+        == "<text><tspan>Ode to Joy</tspan></text>"
+    )

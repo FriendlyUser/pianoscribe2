@@ -96,6 +96,7 @@ default behaviour showed up in grounded testing. Each fix is a small pure functi
 | The score model writes its first bar without context, at double speed with invented notes. | Warm-up: the opening two bars are given to the model twice, and the measures written for the first copy are dropped (`plan_warmup`, `warmed_annotation`, `drop_warmup`). Notes struck just ahead of the next downbeat are left out of the copy, or they reappear as an invented first note (`warm_events`). | overall 0.83 → 0.86 |
 | The beat model sometimes marks every other bar line (bars of N and 2N beats mixed), or swallows an anacrusis into the first bar. | `regularize_bars`: double-length bars are split where the short bar is common, and a long first bar gives up its pickup. | bar placement 0.89 → 0.91; Für Elise opening 0.76 → 0.90 |
 | The score model infers keys from the notes it is given. It missed or misplaced key changes (0.42 to 0.93 of bars under the right signature, depending on the arrangement) and gave a short Für Elise clip one sharp. | Key signatures come from SheetSage2-Refined's key tracker, which hears the recording (`bar_signatures`). Songs follow it; for solo piano it only corrects a region the score model got wrong (`correct_regions`). | key 0.93 in all 8 arrangements; Für Elise clip corrected |
+| Given a long solo recording in one pass, the score model starts to write notes twice: 39% more notes than were played in a 203-bar waltz, none extra in its first 62 bars on their own. Long songs were not affected. | `plan_sections`: a solo piece of more than 64 bars is written in sections of at most 64 bars, cut at bar lines and joined (`join_sections`). | extra notes +39% → +1% on that piece; twice as fast |
 
 **Key signatures.** A key and a key signature are not the same thing. The tracker follows the
 music closely: in the benchmark song it reports F, D, C, G, D, C, F, where the printed
@@ -105,7 +106,10 @@ the two paths differ: a song's signatures follow the tracker, because the score 
 sees the generated arrangement; a solo recording keeps the score model's own regions, because it
 reads the real notes and has learnt how editions print them (no new signature for the G major
 second theme of a Mozart sonata in C, which the tracker correctly hears as G major), and the
-tracker only overrules a region in which it hears one signature throughout.
+tracker only overrules a region in which it hears one signature throughout. A solo piece long
+enough to be written in sections is the exception: the score model never sees it whole, so its
+key regions would just follow the section cuts. There the tracker decides, and a key needs
+sixteen bars to get a signature.
 
 **The opening.** `app/models/fidelity.py` measures how much of the detected melody an
 arrangement plays in time, over the whole song (`melody_fidelity`, reported with each score) and
@@ -197,6 +201,8 @@ MusicXML is the single canonical representation. One Verovio toolkit instance lo
 produces everything else:
 
 - **PDF:** the print-layout SVG pages (A4 or Letter) are converted to vector PDF and concatenated.
+  The rasteriser has no fallback for missing glyphs, so text containing Japanese, Chinese or
+  Korean characters (titles, mostly) is set in a CJK font before conversion.
 - **HTML:** the same print pages, plus a narrow reflowed layout for phones, inlined into one
   self-contained file with the music font, a timing map and a small Web Audio player.
 - **MIDI:** `score.mid` is rendered by Verovio from the score; `performance.mid` is the piano
@@ -253,6 +259,8 @@ with its outcome; per-stage timings are stored on the job record and returned by
   recordings. One benchmark song and a handful of piano pieces are not a broad evaluation.
 - Bass accuracy (0.67 to 0.80 on the benchmark) is the weakest measured dimension of arrangements: the
   left hand sometimes takes a chord tone other than the one a human arranger chose.
+- Where a long solo piece is cut into sections, a note held across the cut is not tied over, and
+  slurs and pedal marks do not span it.
 - Solo piano scores keep the notes that were played, but left-hand notes near middle C are
   sometimes written on the upper staff.
 - No fingering, and articulation is limited to what the score model writes (slurs, pedal,

@@ -30,19 +30,24 @@ function in ``score_fixes.py`` that grounded tests showed to be needed.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 from pathlib import Path
 
 import numpy as np
 import torch
 from score_fixes import (
+    LONG_SOLO_SIGNATURE_BARS,
     bar_signatures,
     complete_meters,
     correct_regions,
+    cut_annotation,
     drop_warmup,
     follow_tracker,
+    join_sections,
     lead_in_to_settle,
     mark_anacrusis,
+    plan_sections,
     plan_warmup,
     regularize_bars,
     warm_events,
@@ -99,13 +104,9 @@ def apply_signatures(measures: list, signatures: list[int]) -> int:
     return changed
 
 
-def install_warmup(start: float, end: float, guard: float) -> None:
-    """Make the performance reader return the opening stretch twice (notes only in the copy).
-
-    Notes that begin within ``guard`` seconds of the end of the stretch are left out of the
-    copy: they are played slightly ahead of the next downbeat, and in the copy that downbeat
-    is the first bar of the real score, where they would appear as an invented note.
-    """
+@contextlib.contextmanager
+def warmed_reader(start: float, end: float, guard: float):  # noqa: ANN201
+    """While active, the performance reader returns the opening stretch twice (see ``warm_events``)."""
     from piano_ar.tokenizer import KIND_NOTE, PianoTokenizer, sort_events
 
     original = PianoTokenizer.midi_to_events
@@ -122,6 +123,84 @@ def install_warmup(start: float, end: float, guard: float) -> None:
         return merged, end_frame
 
     PianoTokenizer.midi_to_events = midi_to_events
+    try:
+        yield
+    finally:
+        PianoTokenizer.midi_to_events = original
+
+
+def cut_cover(cover: Path, start: float, end: float, shift: float, out: Path) -> int:
+    """Write the notes of ``cover`` that begin inside [start, end), moved earlier by ``shift``. Returns how many."""
+    from symusic import Score
+
+    score = Score(str(cover)).to("second")
+    early = 0.03  # a note struck just ahead of a section's first downbeat belongs to that section
+    lo, hi = start - early, end - early
+    kept_notes = 0
+    for track in score.tracks:
+        for name in ("notes", "pedals", "controls", "pitch_bends"):
+            events = getattr(track, name, None)
+            if events is None:
+                continue
+            kept = [event for event in events if lo <= event.time < hi]
+            for event in kept:
+                event.time = max(0.0, event.time - shift)
+            if name == "notes":
+                kept_notes += len(kept)
+            events.clear()
+            events.extend(kept)
+    score.to("tick").dump_midi(str(out))
+    return kept_notes
+
+
+def notate_piece(
+    model, tokenizer, banned, cover: Path, annotation: dict, chords: list, *, warm: bool, on_measure, scratch: Path
+):  # noqa: ANN001, ANN201
+    """Write one stretch of music. Returns its measures and the time (seconds, as in ``cover``) each one starts."""
+    from piano_perf2score.beat_input import BEAT_SECONDS
+    from piano_perf2score.beat_tempo import apply_bar_tempos
+    from piano_perf2score.chords import place_chords
+    from piano_perf2score.generate import beat_performance, transcribe_on_beats
+    from piano_perf2score.staves import readable_staves
+    from piano_perf2score.tidy import tidy_score
+    from symusic import Score
+
+    cover = settle_lead_in(cover, annotation, scratch)
+    first_note = min(
+        (n.time for track in Score(str(cover)).to("second").tracks if not track.is_drum for n in track.notes),
+        default=0.0,
+    )
+    warmup = plan_warmup(annotation, float(first_note)) if warm else None
+    reader = contextlib.nullcontext()
+    if warmup is not None:
+        start, end = warmup
+        beat = float(np.median(np.diff(annotation["beats"]))) if len(annotation.get("beats") or []) > 1 else 0.4
+        reader = warmed_reader(start, end, guard=0.25 * beat)
+        annotation = warmed_annotation(annotation, start, end)
+        chords = [(t + (end - start), text) for t, text in chords]
+    with reader:
+        performance = beat_performance(cover, annotation, chords)
+    performance.meters = complete_meters(list(performance.meters), performance.measure_starts, BEAT_SECONDS)
+    warmup_measures = 0
+    if warmup is not None:
+        warmup_measures = int(np.sum(np.asarray(performance.bar_seconds[:-1]) < warmup[1] - 1e-3))
+    device = next(model.parameters()).device
+    with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
+        patches = transcribe_on_beats(
+            model, tokenizer, performance, temperature=0.0, banned=banned, on_measure=on_measure
+        )
+    measures = tokenizer.decode(patches)[0]
+    tidied = tidy_score(measures)
+    readable_staves(measures)
+    apply_bar_tempos(measures, performance, tidied.rests)
+    if performance.chords:
+        place_chords(measures, performance, performance.chords, tidied.rests)
+    # tidy_score may have removed empty measures at the very start; they count toward the warm-up.
+    first_bar = max(warmup_measures, tidied.rests)
+    measures = drop_warmup(measures, first_bar - tidied.rests)
+    shift = (warmup[1] - warmup[0]) if warmup is not None else 0.0
+    bar_starts = [float(t) - shift for t in performance.bar_seconds[first_bar : first_bar + len(measures)]]
+    return measures, bar_starts
 
 
 def main() -> None:
@@ -141,15 +220,16 @@ def main() -> None:
         help="follow: key signatures come from the tracker (songs); correct: the score model's regions, "
         "each corrected where the tracker hears a single signature (solo piano)",
     )
+    parser.add_argument(
+        "--section-bars",
+        type=int,
+        default=0,
+        help="write a piece longer than this many bars in sections of at most this size (0: in one pass)",
+    )
     args = parser.parse_args()
 
-    from piano_perf2score.beat_input import BEAT_SECONDS
-    from piano_perf2score.beat_tempo import apply_bar_tempos
-    from piano_perf2score.chords import place_chords, read_chord_markers
-    from piano_perf2score.generate import beat_performance, transcribe_on_beats
+    from piano_perf2score.chords import read_chord_markers
     from piano_perf2score.hub import load_perf2score
-    from piano_perf2score.staves import readable_staves
-    from piano_perf2score.tidy import tidy_score
     from piano_score.musicxml import write_musicxml
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -157,59 +237,57 @@ def main() -> None:
     annotation = json.loads(Path(args.annotation).read_text(encoding="utf-8"))
     annotation = regularize_bars(annotation)
     chords = read_chord_markers(args.chords or args.cover)
-    cover = settle_lead_in(Path(args.cover), annotation, Path(args.out).with_suffix(".settled.mid"))
+    out = Path(args.out)
 
-    from symusic import Score
+    spans = plan_sections([float(b["start"]) for b in annotation.get("bars") or []], args.section_bars)
+    written: list[list] = []
+    bar_starts: list[float] = []
+    for index, (start, end) in enumerate(spans):
 
-    first_note = min(
-        (n.time for track in Score(str(cover)).to("second").tracks if not track.is_drum for n in track.notes),
-        default=0.0,
-    )
-    warmup = None if args.no_warmup else plan_warmup(annotation, float(first_note))
-    if warmup is not None:
-        start, end = warmup
-        beat = float(np.median(np.diff(annotation["beats"]))) if len(annotation.get("beats") or []) > 1 else 0.4
-        install_warmup(start, end, guard=0.25 * beat)
-        annotation = warmed_annotation(annotation, start, end)
-        chords = [(t + (end - start), text) for t, text in chords]
+        def on_measure(done: int, total: int, index: int = index) -> None:
+            share = (index + done / max(total, 1)) / len(spans)
+            print(
+                f"@@progress {json.dumps({'stage': 'notate', 'done': round(share * 1000), 'total': 1000})}", flush=True
+            )
 
-    performance = beat_performance(cover, annotation, chords)
-    performance.meters = complete_meters(list(performance.meters), performance.measure_starts, BEAT_SECONDS)
-    warmup_measures = 0
-    if warmup is not None:
-        warmup_measures = int(np.sum(np.asarray(performance.bar_seconds[:-1]) < warmup[1] - 1e-3))
+        if len(spans) == 1:
+            cover, part, part_chords, shift = Path(args.cover), annotation, chords, 0.0
+        else:
+            # Each section starts a second in, as a recording would, with its own bar 1.
+            shift = 0.0 if index == 0 else start - 1.0
+            cover = out.with_suffix(f".section{index}.mid")
+            if cut_cover(Path(args.cover), start, end, shift, cover) == 0:
+                continue
+            part = cut_annotation(annotation, start, end, shift)
+            part_chords = [(t - shift, text) for t, text in chords if start <= t < end]
+        measures, starts = notate_piece(
+            model, tokenizer, banned, cover, part, part_chords,
+            warm=not args.no_warmup, on_measure=on_measure, scratch=out.with_suffix(f".settled{index}.mid"),
+        )  # fmt: skip
+        written.append(measures)
+        bar_starts += [t + shift for t in starts]
+    measures = join_sections(written)
 
-    def on_measure(done: int, total: int) -> None:
-        print(f"@@progress {json.dumps({'stage': 'notate', 'done': int(done), 'total': int(total)})}", flush=True)
-
-    with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
-        patches = transcribe_on_beats(
-            model, tokenizer, performance, temperature=0.0, banned=banned, on_measure=on_measure
-        )
-    measures = tokenizer.decode(patches)[0]
-    tidied = tidy_score(measures)
-    readable_staves(measures)
-    apply_bar_tempos(measures, performance, tidied.rests)
-    if performance.chords:
-        place_chords(measures, performance, performance.chords, tidied.rests)
-    # tidy_score may have removed empty measures at the very start; they count toward the warm-up.
-    first_bar = max(warmup_measures, tidied.rests)
-    measures = drop_warmup(measures, first_bar - tidied.rests)
     key_changes = 0
     if args.keys:
         tracked = json.loads(Path(args.keys).read_text(encoding="utf-8")).get("keys") or []
-        shift = (warmup[1] - warmup[0]) if warmup is not None else 0.0
-        bar_starts = [float(t) - shift for t in performance.bar_seconds[first_bar : first_bar + len(measures)]]
         if tracked and len(bar_starts) == len(measures):
-            heard = bar_signatures(tracked, bar_starts)
             model_keys = [m.key for m in measures]
-            policy = follow_tracker if args.key_policy == "follow" else correct_regions
-            key_changes = apply_signatures(measures, policy(model_keys, heard))
+            if args.key_policy == "follow":
+                signatures = follow_tracker(model_keys, bar_signatures(tracked, bar_starts))
+            elif len(written) > 1:
+                # Written in sections, the score model never saw the whole piece: its key regions
+                # just follow the section cuts. The tracker decides, with a higher bar for a change.
+                signatures = follow_tracker(model_keys, bar_signatures(tracked, bar_starts, LONG_SOLO_SIGNATURE_BARS))
+            else:
+                signatures = correct_regions(model_keys, bar_signatures(tracked, bar_starts))
+            key_changes = apply_signatures(measures, signatures)
     mark_anacrusis(measures)
-    write_musicxml(measures, Path(args.out), title=args.title)
+    write_musicxml(measures, out, title=args.title)
+    for leftover in [*out.parent.glob(f"{out.stem}.section*.mid"), *out.parent.glob(f"{out.stem}.settled*.mid")]:
+        leftover.unlink(missing_ok=True)
     print(
-        f"{len(measures)} measures -> {args.out} "
-        f"(warm-up measures dropped: {warmup_measures}, measures given the tracked key: {key_changes})"
+        f"{len(measures)} measures in {len(written)} section(s) -> {out} (measures given the tracked key: {key_changes})"
     )
 
 

@@ -308,3 +308,45 @@ def test_only_an_accompaniment_lead_in_is_settled() -> None:
     assert lead_in_to_settle([0.17, 0.54], pickup) is None  # the melody itself has an anacrusis
     no_melody = {**annotation, "melody": []}
     assert lead_in_to_settle([0.17, 0.54], no_melody) is None and lead_in_to_settle([0.45, 0.54], no_melody) == 0.538
+
+
+def test_a_long_piece_is_cut_into_even_sections_at_bar_lines() -> None:
+    import math
+
+    from score_fixes import plan_sections
+
+    bars = [float(i * 2) for i in range(203)]
+    spans = plan_sections(bars, 64)
+    assert len(spans) == 4 and spans[0][0] == -math.inf and spans[-1][1] == math.inf
+    assert all(a[1] == b[0] for a, b in zip(spans, spans[1:], strict=False))  # no gap, no overlap
+    sizes = [sum(1 for t in bars if lo <= t < hi) for lo, hi in spans]
+    assert sizes == [51, 51, 51, 50] and all(lo in bars for lo, _ in spans[1:])
+    assert plan_sections(bars[:64], 64) == [(-math.inf, math.inf)]  # short enough: one pass
+    assert plan_sections(bars, 0) == [(-math.inf, math.inf)]  # disabled
+
+
+def test_a_section_of_the_annotation_is_cut_out_and_moved_to_the_start() -> None:
+    from score_fixes import cut_annotation
+
+    cut = cut_annotation(ANNOTATION, DOWNBEATS[2], DOWNBEATS[5], shift=DOWNBEATS[2] - 1.0)
+    assert [round(d, 4) for d in cut["downbeats"]] == [round(1.0 + i * 6 * BEAT, 4) for i in range(3)]
+    assert len(cut["bars"]) == 3 and cut["bars"][0]["start"] == 1.0 and len(cut["beats"]) == 18
+    assert cut["melody"] and min(n["start"] for n in cut["melody"]) >= 1.0 - 1e-6
+    assert cut["duration"] == DOWNBEATS[5] - DOWNBEATS[2] + 1.0
+    assert ANNOTATION["downbeats"] == DOWNBEATS  # the input is not modified
+
+
+def test_joined_sections_do_not_restate_tempo_and_dynamic() -> None:
+    from score_fixes import join_sections
+
+    first = [
+        Measure(directions=[(F(0), "metronome_quarter_144"), (F(0), "dyn_p")]),
+        Measure(directions=[(F(1), "dyn_f")]),
+    ]
+    second = [Measure(directions=[(F(0), "metronome_quarter_144"), (F(0), "dyn_f"), (F(2), "dyn_p")]), Measure()]
+    third = [Measure(directions=[(F(0), "metronome_quarter_120"), (F(0), "dyn_p")])]
+    joined = join_sections([first, second, third])
+    assert len(joined) == 5
+    assert joined[2].directions == [(F(2), "dyn_p")]  # same tempo and dynamic as before the join: removed
+    assert joined[4].directions == [(F(0), "metronome_quarter_120")]  # a new tempo is kept, the dynamic is not new
+    assert joined[0].directions == [(F(0), "metronome_quarter_144"), (F(0), "dyn_p")]

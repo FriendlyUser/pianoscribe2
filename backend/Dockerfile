@@ -57,7 +57,7 @@ RUN ln -s /models/tsumugi/checkpoints tsumugi/checkpoints \
 FROM base AS worker
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg libcairo2 fontconfig fonts-liberation2 util-linux \
-      gcc g++ libc6-dev \
+      gcc g++ libc6-dev fonts-noto-cjk \
  && rm -rf /var/lib/apt/lists/*
 # (gcc/g++: the transcriber compiles its GPU kernels on first use, via torch.compile.)
 # JavaScript runtime required by yt-dlp for YouTube extraction.

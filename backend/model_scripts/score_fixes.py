@@ -11,6 +11,8 @@ COMMON_BAR_SHARE = 0.25
 
 # Bars a key must last before it gets a key signature of its own.
 MIN_SIGNATURE_BARS = 8
+# The same, for a solo piece long enough to be written in sections (see ``plan_sections``).
+LONG_SOLO_SIGNATURE_BARS = 16
 _PITCH_CLASS = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 # Semitones from a mode's tonic up to the tonic of the major scale with the same notes.
 _PARENT_MAJOR = {
@@ -123,6 +125,76 @@ def lead_in_to_settle(note_starts: list[float], annotation: dict) -> float | Non
     elif earliest < first - 0.5 * beat:
         return None  # no melody to consult: only a slight anticipation is settled
     return first
+
+
+def plan_sections(bar_starts: list[float], max_bars: int) -> list[tuple[float, float]]:
+    """Time spans [start, end) to write a long piece in, each at most ``max_bars`` bars and all
+    about the same size; a single span covering everything for a piece that is short enough.
+
+    The score model reads the whole performance it is given. On a long solo recording its
+    writing degrades with length: it starts to strike notes twice (39 % more notes than were
+    played in a 203-bar waltz, none extra in the first 62 bars written on their own).
+    """
+    count = len(bar_starts)
+    if max_bars <= 0 or count <= max_bars:
+        return [(-np.inf, np.inf)]
+    sections = -(-count // max_bars)
+    size = -(-count // sections)
+    cuts = [float(bar_starts[i]) for i in range(size, count, size)]
+    edges = [-np.inf, *cuts, np.inf]
+    return list(zip(edges, edges[1:], strict=False))
+
+
+def cut_annotation(annotation: dict, start: float, end: float, shift: float) -> dict:
+    """The part of an annotation inside [start, end), with every time moved earlier by ``shift``."""
+    eps = 1e-3
+
+    def inside(t: float) -> bool:
+        return start - eps <= t < end - eps
+
+    out = dict(annotation)
+    out["beats"] = [float(b) - shift for b in annotation.get("beats") or [] if inside(float(b))]
+    out["downbeats"] = [float(b) - shift for b in annotation.get("downbeats") or [] if inside(float(b))]
+    out["bars"] = [
+        {**bar, "start": float(bar["start"]) - shift}
+        for bar in annotation.get("bars") or []
+        if inside(float(bar["start"]))
+    ]
+    out["melody"] = [
+        {**note, "start": float(note["start"]) - shift, "end": float(note["end"]) - shift}
+        for note in annotation.get("melody") or []
+        if inside(float(note["start"]))
+    ]
+    out["duration"] = min(float(annotation.get("duration", end)), end) - shift
+    return out
+
+
+def join_sections(sections: list[list]) -> list:
+    """One list of measures from sections written separately.
+
+    Each section restates the tempo and the dynamic at its start; where that only repeats
+    what is already in force, the repeat is removed.
+    """
+    joined: list = []
+    in_force: dict[str, str] = {}
+    for index, measures in enumerate(sections):
+        if index and measures:
+            first = measures[0]
+            first.directions = [
+                (pos, name)
+                for pos, name in first.directions
+                if not (pos == 0 and any(name.startswith(kind) and in_force.get(kind) == name for kind in _RESTATED))
+            ]
+        for measure in measures:
+            for _, name in sorted(measure.directions, key=lambda d: d[0]):
+                for kind in _RESTATED:
+                    if name.startswith(kind):
+                        in_force[kind] = name
+        joined.extend(measures)
+    return joined
+
+
+_RESTATED = ("metronome_", "dyn_")
 
 
 def _bar_beats(annotation: dict) -> list[list[float]]:

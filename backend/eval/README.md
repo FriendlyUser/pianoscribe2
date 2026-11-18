@@ -24,6 +24,41 @@ python -m eval.run transcription eval/data/maestro OUTPUT_DIR tsumugi=tsumugi
 
 Tests skip, rather than fail, when their recording or reference is absent.
 
+## Checking a result without a reference
+
+Most recordings have no reference score. Two checks still apply to any finished job:
+
+```bash
+python -m eval.field_check RECORDING.wav ARTIFACT_DIR    # ARTIFACT_DIR: the job's downloaded files
+```
+
+- **Note fidelity** (`eval/fidelity.py`): the written score against the performance MIDI it was
+  written from, as multisets of pitches. The score model may respell and regroup, but it should
+  neither invent notes nor lose them. Asserted in the grounded tests (97% both ways).
+- **Harmony agreement** (`eval/field_check.py`): the pitch-class content of the audio, from a
+  plain spectrum, against the notes of the MIDI in half-second windows. No model is involved on
+  the audio side, and the same notes shifted in time or transposed give the baseline.
+
+Neither can say whether each melody note is right; they confirm that the result follows the
+recording and that the notation is faithful to what was transcribed.
+
+### Field test, 2026-11-17
+
+Four recordings picked from YouTube searches, run through the full stack from their links.
+
+| Recording | Path | Published key, meter, tempo | Harmony agreement (transposed baseline) | Notes written vs performed |
+|---|---|---|---|---|
+| "Hikaru Nara" (Your Lie in April), 4:19 | song | A major, 4/4, 160: all matched | 0.76 (0.35) | +1% |
+| "Tori no Uta" (Air), 6:08 | song | B minor, 4/4, 122: matched (120); the change to G♯ minor followed | 0.70 (0.36) | +0% |
+| "Natsukage" (Air), piano cover, 3:44 | solo | E♭ major, 4/4: matched | 0.86 (0.34) | -2% |
+| "Merry-Go-Round" (Howl's Moving Castle), piano solo, 4:28 | solo | G minor, 3/4: matched | 0.89 (0.34) | +1% (was **+39%**) |
+
+The first run of this test found two defects, both since fixed. The 203-bar solo piece was written
+with 39% more notes than were played, because the score model degrades on long solo input; long
+solo pieces are now written in sections. And Japanese titles were blank in the PDF for want of a
+font. For scale on the harmony column: the benchmark arrangement that scores 0.87 against its
+human reference gives 0.72 here, and the Für Elise clip 0.84.
+
 ## Score references
 
 A reference is a JSON file transcribed by hand from a printed score:
@@ -64,8 +99,9 @@ lower exactly the metric that describes it.
 
 ## Material that is not in the repository
 
-- `eval/data/` (git-ignored): recordings. `eval/data/maestro/<name>.wav|.midi` and, for the
-  arrangement benchmark, `eval/data/scene_shifts_there.wav`.
+- `eval/data/` (git-ignored): recordings. `eval/data/maestro/<name>.wav|.midi`, for the
+  arrangement benchmark `eval/data/scene_shifts_there.wav`, and for the long-solo test any solo
+  piano recording of more than about three minutes as `eval/data/long_solo.wav`.
 - `eval/private/` (git-ignored): references read from scores that are under copyright. A reference
   encodes the melody of the work, so it is kept out of the repository; the test that uses it
   (`tests/grounded/test_scene_shifts.py`) skips when it is missing.

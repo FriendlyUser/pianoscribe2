@@ -177,6 +177,7 @@ def write_score(
     partial = out_xml.with_suffix(".partial.musicxml")
     chords: list[str | Path] = ["--chords", source_midi] if source_midi is not None else []
     # A song's key signatures follow the key tracker; a solo recording's are only corrected by it.
+    sections: list[str | Path] = ["--section-bars", str(settings.solo_section_bars)] if source_midi is None else []
     tracked: list[str | Path] = (
         ["--keys", keys, "--key-policy", "follow" if source_midi is not None else "correct"] if keys else []
     )
@@ -197,6 +198,7 @@ def write_score(
             title,
             *chords,
             *tracked,
+            *sections,
         ],  # fmt: skip
         cwd=settings.cover_dir,
         timeout=settings.notate_timeout_seconds,
