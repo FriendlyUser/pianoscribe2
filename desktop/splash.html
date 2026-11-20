@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<title>PianoScribe</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f4f2ed; --ink: #1d1c1a; --muted: #6a675f; --accent: #b4441c; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #171615; --ink: #efede8; --muted: #a6a39a; --accent: #e8703f; } }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.4 system-ui, sans-serif; }
+  body { display: grid; place-items: center; text-align: center; }
+  .mark { display: inline-grid; place-items: center; width: 52px; height: 52px; border-radius: 14px; background: var(--accent); color: #fff; font-size: 28px; }
+  h1 { font-size: 20px; margin: 14px 0 4px; }
+  p { color: var(--muted); margin: 0; }
+</style>
+</head>
+<body>
+  <div>
+    <div class="mark">♪</div>
+    <h1>PianoScribe</h1>
+    <p>Starting…</p>
+  </div>
+</body>
+</html>

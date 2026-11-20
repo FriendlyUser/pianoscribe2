@@ -83,6 +83,10 @@ async def test_bad_extension_and_empty_upload(settings: Settings) -> None:
     assert empty.value.code == "empty_file"
 
 
+# The resource limits come from util-linux; elsewhere (desktop builds) the sandbox runs in "basic" mode.
+LINUX_ONLY = pytest.mark.skipif(sys.platform != "linux", reason="Linux resource limits (setpriv, prlimit)")
+
+
 def test_filenames_are_never_trusted() -> None:
     assert sanitize_filename("../../etc/passwd") == "passwd"
     assert sanitize_filename("C:\\Users\\me\\song.mp3") == "song.mp3"
@@ -96,12 +100,14 @@ def limits(**overrides: int | None) -> ResourceLimits:
     return ResourceLimits(**{**base, **overrides})  # type: ignore[arg-type]
 
 
+@LINUX_ONLY
 def test_sandbox_runs_and_captures_output(tmp_path: Path) -> None:
     result = run_sandboxed([sys.executable, "-c", "print('hi')"], cwd=tmp_path, timeout=20, limits=limits())
     assert result.returncode == 0 and result.stdout.strip() == "hi" and not result.timed_out
     assert list(tmp_path.iterdir()) == []
 
 
+@LINUX_ONLY
 def test_sandbox_kills_on_timeout_including_children(tmp_path: Path) -> None:
     script = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); time.sleep(60)"
     started = time.monotonic()
@@ -110,6 +116,7 @@ def test_sandbox_kills_on_timeout_including_children(tmp_path: Path) -> None:
     assert excinfo.value.result.timed_out and time.monotonic() - started < 10
 
 
+@LINUX_ONLY
 def test_sandbox_enforces_file_size_and_hides_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PS_SECRET_TOKEN", "do-not-leak")
     leak = run_sandboxed(
@@ -127,6 +134,7 @@ def test_sandbox_enforces_file_size_and_hides_environment(tmp_path: Path, monkey
     assert not (tmp_path / "big.bin").exists() or (tmp_path / "big.bin").stat().st_size <= 1024 * 1024
 
 
+@LINUX_ONLY
 def test_sandbox_enforces_memory_limit(tmp_path: Path) -> None:
     result = run_sandboxed(
         [sys.executable, "-c", "x = bytearray(900 * 1024 * 1024)"],
@@ -175,6 +183,7 @@ def test_janitor_purges_expired_files_only(settings: Settings, store, artifacts)
     assert artifacts.complete(kept_id) and store.get(kept_id) is not None
 
 
+@LINUX_ONLY
 def test_sandbox_sets_no_new_privs_and_limits(tmp_path: Path) -> None:
     script = (
         "import resource\n"

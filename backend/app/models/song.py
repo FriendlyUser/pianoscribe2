@@ -21,6 +21,8 @@ notation stage.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,10 +57,14 @@ def transcribe_song(audio: Path, out_midi: Path, settings: Settings, progress: P
             stems_done += 1
 
     work = out_midi.parent / "_tsumugi_work"
+    ffmpeg_libraries: list[str | Path] = (
+        ["--ffmpeg-dir", settings.ffmpeg_shared_dir] if settings.ffmpeg_shared_dir else []
+    )
     run_step(
         "transcribe",
         [
             settings.tsumugi_python,
+            *([settings.scripts_dir / "song_transcribe.py"] if settings.audio_io == "soundfile" else []),
             settings.cover_dir / "cover_studio" / "tsumugi_worker.py",
             "--tsumugi-dir",
             settings.tsumugi_dir,
@@ -72,6 +78,7 @@ def transcribe_song(audio: Path, out_midi: Path, settings: Settings, progress: P
             settings.model_device,
             "--window-batch-size",
             str(settings.tsumugi_window_batch_size),
+            *ffmpeg_libraries,
         ],  # fmt: skip
         cwd=settings.tsumugi_dir,
         timeout=settings.transcribe_timeout_seconds,
@@ -211,11 +218,41 @@ def write_score(
     return out_xml
 
 
+def link_or_copy(source: Path, target: Path) -> None:
+    """Make ``target`` show the contents of ``source`` as cheaply as the platform allows.
+
+    A symbolic link needs administrator rights or Developer Mode on Windows; a hard link
+    does not (same volume); a copy always works.
+    """
+    try:
+        target.symlink_to(source)
+        return
+    except OSError:
+        pass
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copyfile(source, target)
+
+
 def transcribe_piano(audio: Path, out_midi: Path, settings: Settings, progress: Progress | None = None) -> Path:
     """Solo piano: transcribe ``audio`` to a performance MIDI with note velocities."""
     raw = out_midi.with_suffix(".notes.mid")
     if progress:
         progress(0.0, "Transcribing piano notes")
+    if settings.solo_transcriber.startswith("muscriptor-"):
+        _muscriptor_piano(audio, raw, settings)
+    else:
+        _tsumugi_piano(audio, raw, settings)
+    if progress:
+        progress(0.7, "Estimating dynamics")
+    _add_velocities(audio, raw, out_midi, settings)
+    if not out_midi.is_file() or out_midi.stat().st_size == 0:
+        raise RuntimeError("the transcription produced no MIDI")
+    return out_midi
+
+
+def _tsumugi_piano(audio: Path, raw: Path, settings: Settings) -> None:
     run_step(
         "transcribe",
         [
@@ -237,8 +274,52 @@ def transcribe_piano(audio: Path, out_midi: Path, settings: Settings, progress: 
         cwd=settings.tsumugi_dir,
         timeout=settings.transcribe_timeout_seconds,
     )
-    if progress:
-        progress(0.7, "Estimating dynamics")
+
+
+def _muscriptor_piano(audio: Path, raw: Path, settings: Settings) -> None:
+    """MuScriptor's piano notes, as one track named the way tsumugi's velocity model expects."""
+    import mido
+
+    size = settings.solo_transcriber.removeprefix("muscriptor-")
+    produced = raw.with_suffix(".muscriptor.mid")
+    run_step(
+        "transcribe",
+        [
+            settings.tsumugi_python,
+            "-m",
+            "muscriptor",
+            "transcribe",
+            "--model",
+            size,
+            "--instruments",
+            "acoustic_piano",
+            "--detect-tempo",
+            "false",
+            "-o",
+            produced,
+            audio,
+        ],  # fmt: skip
+        cwd=raw.parent,
+        timeout=settings.transcribe_timeout_seconds,
+    )
+    source = mido.MidiFile(str(produced))
+    piano = mido.MidiFile(ticks_per_beat=source.ticks_per_beat)
+    track = mido.MidiTrack([mido.MetaMessage("track_name", name="piano", time=0)])
+    now, last = 0, 0
+    for message in mido.merge_tracks(source.tracks):
+        now += message.time
+        if message.is_meta and message.type != "set_tempo":
+            continue
+        if not message.is_meta and getattr(message, "channel", 0) == 9:
+            continue
+        track.append(message.copy(time=now - last))
+        last = now
+    piano.tracks.append(track)
+    piano.save(str(raw))
+    produced.unlink(missing_ok=True)
+
+
+def _add_velocities(audio: Path, raw: Path, out_midi: Path, settings: Settings) -> None:
     # The velocity model reads loudness from the stem a track came from; for a solo
     # recording the piano "stem" is the recording itself.
     stems = out_midi.parent / "_stems"
@@ -246,7 +327,7 @@ def transcribe_piano(audio: Path, out_midi: Path, settings: Settings, progress: 
     link = stems / "piano.wav"
     if link.is_symlink() or link.exists():
         link.unlink()
-    link.symlink_to(audio.resolve())
+    link_or_copy(audio.resolve(), link)
     try:
         run_step(
             "velocity",
@@ -268,9 +349,6 @@ def transcribe_piano(audio: Path, out_midi: Path, settings: Settings, progress: 
         link.unlink(missing_ok=True)
         stems.rmdir()
         raw.unlink(missing_ok=True)
-    if not out_midi.is_file() or out_midi.stat().st_size == 0:
-        raise RuntimeError("tsumugi produced no MIDI")
-    return out_midi
 
 
 def annotate_audio(audio: Path, out_json: Path, settings: Settings) -> Path:

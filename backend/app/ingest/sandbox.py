@@ -18,18 +18,18 @@ memory/CPU/pid limits).
 
 from __future__ import annotations
 
-import contextlib
 import os
 import shutil
-import signal
 import subprocess
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.config import Settings
 from app.logging import get_logger
+from app.proc import WINDOWS, group_kwargs, kill_tree
 
 log = get_logger(__name__)
 _OUTPUT_LIMIT = 64 * 1024 * 1024
@@ -41,6 +41,9 @@ class ResourceLimits:
     cpu_seconds: int
     file_bytes: int
     open_files: int
+    # False (desktop builds): run the tool with its time limit only when the limit tools are
+    # missing. The server keeps the default and refuses to run a media tool without them.
+    required: bool = True
 
     @classmethod
     def for_media(cls, settings: Settings) -> ResourceLimits:
@@ -49,6 +52,7 @@ class ResourceLimits:
             cpu_seconds=settings.sandbox_cpu_seconds,
             file_bytes=settings.sandbox_max_file_mb * 1024 * 1024,
             open_files=settings.sandbox_max_open_files,
+            required=settings.sandbox == "strict",
         )
 
     @classmethod
@@ -61,6 +65,7 @@ class ResourceLimits:
             cpu_seconds=settings.sandbox_cpu_seconds,
             file_bytes=settings.youtube_max_filesize_mb * 1024 * 1024,
             open_files=max(settings.sandbox_max_open_files, 1024),
+            required=settings.sandbox == "strict",
         )
 
 
@@ -83,6 +88,8 @@ def _launcher(limits: ResourceLimits) -> list[str]:
     """Command prefix that applies the limits and then execs the real tool."""
     setpriv, prlimit = shutil.which("setpriv"), shutil.which("prlimit")
     if setpriv is None or prlimit is None:
+        if not limits.required:
+            return []  # desktop: the user's own machine and files; the time limit still applies
         # Fail closed: never run a media tool without its limits.
         raise RuntimeError("sandbox requires `setpriv` and `prlimit` (util-linux) on PATH")
     args = [
@@ -107,6 +114,12 @@ def _minimal_env(extra: dict[str, str] | None, home: Path) -> dict[str, str]:
         "TMPDIR": str(home),
         "XDG_CACHE_HOME": str(home / ".cache"),
     }
+    if WINDOWS:
+        # Programs on Windows need these to start at all (sockets, temp files, the user profile).
+        for name in ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT"):
+            if name in os.environ:
+                env[name] = os.environ[name]
+        env.update({"TEMP": str(home), "TMP": str(home), "USERPROFILE": str(home), "APPDATA": str(home)})
     for passthrough in ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE"):
         if passthrough in os.environ:
             env[passthrough] = os.environ[passthrough]
@@ -129,6 +142,7 @@ def run_sandboxed(
     stdout_path = cwd / f".sandbox-{os.getpid()}-{time.monotonic_ns()}.out"
     stderr_path = stdout_path.with_suffix(".err")
     timed_out = False
+    process_options: dict[str, Any] = {**group_kwargs(), **({} if WINDOWS else {"umask": 0o077})}
     with stdout_path.open("wb") as out, stderr_path.open("wb") as err:
         process = subprocess.Popen(  # argv is built by the caller, never a shell string
             [*_launcher(limits), *argv],
@@ -137,18 +151,16 @@ def run_sandboxed(
             stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=err,
-            start_new_session=True,
-            umask=0o077,
             close_fds=True,
+            **process_options,
         )
         try:
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
         finally:
-            # Kill the whole session: also reaps helpers left behind on normal exit.
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
+            # Kill the whole group: also reaps helpers left behind on normal exit.
+            kill_tree(process)
             process.wait()
     try:
         stdout = stdout_path.read_bytes()[:_OUTPUT_LIMIT].decode("utf-8", "replace")

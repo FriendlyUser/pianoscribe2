@@ -1,0 +1,35 @@
+PianoScribe desktop app: what is bundled, and under which terms
+=================================================================
+
+The PianoScribe code (backend, web interface, desktop shell) is the property of its
+author and is distributed for non-commercial use with the model weights below.
+
+MODEL WEIGHTS - NON-COMMERCIAL USE ONLY
+  SheetSage2-Refined            https://huggingface.co/anime-song/SheetSage2-Refined     CC BY-NC 4.0
+  tsumugi-piano-cover-v2        https://huggingface.co/anime-song/tsumugi-piano-cover-v2 CC BY-NC 4.0
+    (includes the piano_perf2score score writer)
+  CC BY-NC 4.0: https://creativecommons.org/licenses/by-nc/4.0/ - attribution required,
+  no commercial use. Because every score passes through these models, the app as a whole
+  may only be used for non-commercial purposes.
+
+MODEL WEIGHTS - MIT
+  tsumugi (instrument_agnostic_amt) https://huggingface.co/anime-song/instrument_agnostic_amt
+  stem-splitter                     https://huggingface.co/anime-song/stem-splitter
+
+MODEL PROGRAMS - MIT
+  tsumugi               https://github.com/anime-song/tsumugi
+  tsumugi-piano-cover   https://github.com/anime-song/tsumugi-piano-cover
+  SheetSage2-Refined    https://github.com/anime-song/SheetSage2-Refined
+
+OPTIONAL, NOT BUNDLED
+  MuScriptor (small / medium / large) https://huggingface.co/MuScriptor - CC BY-NC 4.0 plus the
+  authors' conditions of use, accepted by each user on the model page before downloading.
+
+TOOLS
+  FFmpeg   https://ffmpeg.org - Windows: LGPL build by BtbN (https://github.com/BtbN/FFmpeg-Builds);
+           macOS: build by Martin Riedl (https://ffmpeg.martin-riedl.de), GPL. Source code:
+           https://ffmpeg.org/download.html
+  yt-dlp   https://github.com/yt-dlp/yt-dlp - Unlicense
+  Deno     https://deno.com - MIT
+  Python   https://www.python.org - PSF licence (python-build-standalone)
+  PyTorch and the other Python packages keep their own licences, which are installed alongside them.

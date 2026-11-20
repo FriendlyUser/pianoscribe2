@@ -28,6 +28,11 @@ def queue_dep() -> JobQueue:
     return DramatiqQueue()
 
 
+def job_models_dep() -> dict[str, str | int | float] | None:
+    """Per-job model settings: none on the server; the desktop app supplies the user's choices."""
+    return None
+
+
 def artifacts_dep() -> ArtifactStore:
     from app.jobs.queue import get_artifacts
 

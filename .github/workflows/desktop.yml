@@ -1,0 +1,206 @@
+# Builds the PianoScribe desktop app (Windows x64 with NVIDIA CUDA; macOS on Apple Silicon),
+# checks it end to end with a headless smoke test, and attaches it to a draft GitHub release.
+#
+# Run it from the Actions tab ("Desktop app" > Run workflow), or push a tag named desktop-v*.
+# The app is 5-9 GB with its models, so it is uploaded as parts under GitHub's 2 GiB file limit;
+# the release notes say how to join them. Workflow artifacts are kept small on purpose: a private
+# repository on the free plan has 500 MB of artifact storage.
+name: Desktop app
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Which apps to build
+        type: choice
+        options: [windows, macos, both]
+        default: windows
+      release:
+        description: Attach the build to a draft release
+        type: boolean
+        default: true
+  push:
+    tags: ["desktop-v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.13.8"
+  NODE_VERSION: "24"
+  RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('desktop-build-{0}', github.run_number) }}
+
+jobs:
+  web:
+    name: Web interface
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Test and build
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm run build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web
+          path: frontend/dist
+          retention-days: 1
+
+  windows:
+    name: Windows x64
+    needs: web
+    if: ${{ github.event_name == 'push' || inputs.platforms != 'macos' }}
+    runs-on: windows-2025
+    timeout-minutes: 180
+    env:
+      WORK: ${{ github.workspace }}\..\build
+      UV_CACHE_DIR: ${{ github.workspace }}\..\uv-cache
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: web
+          path: frontend/dist
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Payload (Python, packages, models, tools)
+        run: |
+          python -m pip install --quiet "huggingface_hub==2.2.0"
+          python desktop/build_payload.py --out "$env:WORK\payload" --web frontend/dist --platform windows
+          Remove-Item -Recurse -Force "$env:UV_CACHE_DIR" -ErrorAction SilentlyContinue
+      - name: Desktop shell
+        working-directory: desktop
+        run: |
+          npm ci --no-audit --no-fund
+          npx electron-builder --dir --publish never
+          Move-Item "$env:WORK\payload" "dist\win-unpacked\resources\payload"
+      - name: Smoke test (no GPU on the runner, so this runs on the processor)
+        run: |
+          $app = "desktop\dist\win-unpacked\PianoScribe.exe"
+          $proc = Start-Process -FilePath $app -PassThru -Wait -ArgumentList @(
+            "--smoke-test=$PWD\samples\fur_elise_opening.mp3", "--smoke-out=$env:WORK\smoke", "--smoke-solo")
+          Get-Content "$env:WORK\smoke\smoke.json" -ErrorAction SilentlyContinue
+          if ($proc.ExitCode -ne 0) {
+            Get-Content "$env:APPDATA\PianoScribe\backend.log" -Tail 80 -ErrorAction SilentlyContinue
+            throw "smoke test failed ($($proc.ExitCode))"
+          }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: smoke-windows
+          path: ${{ env.WORK }}\smoke
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Archive in parts
+        run: |
+          New-Item -ItemType Directory -Force "$env:WORK\release" | Out-Null
+          Rename-Item "desktop\dist\win-unpacked" "PianoScribe"
+          7z a -t7z -mx=3 -v1900m "$env:WORK\release\PianoScribe-windows-x64.7z" ".\desktop\dist\PianoScribe" | Out-Null
+          Get-ChildItem "$env:WORK\release" | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } |
+            Set-Content "$env:WORK\release\SHA256SUMS-windows.txt"
+          Get-ChildItem "$env:WORK\release" | Format-Table Name, Length
+      - name: Attach to the draft release
+        if: ${{ github.event_name == 'push' || inputs.release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:RELEASE_TAG 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --draft --target $env:GITHUB_SHA --title "PianoScribe desktop ($env:RELEASE_TAG)" --notes-file desktop/RELEASE_NOTES.md
+          }
+          gh release upload $env:RELEASE_TAG (Get-ChildItem "$env:WORK\release").FullName --clobber
+
+  macos:
+    name: macOS (Apple Silicon)
+    needs: web
+    if: ${{ github.event_name == 'push' || inputs.platforms != 'windows' }}
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      WORK: ${{ github.workspace }}/../build
+      UV_CACHE_DIR: ${{ github.workspace }}/../uv-cache
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: web
+          path: frontend/dist
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Payload (Python, packages, models, tools)
+        run: |
+          python -m pip install --quiet "huggingface_hub==2.2.0"
+          python desktop/build_payload.py --out "$WORK/payload" --web frontend/dist --platform macos
+          rm -rf "$UV_CACHE_DIR"
+          df -h .
+      - name: Desktop shell
+        working-directory: desktop
+        run: |
+          npm ci --no-audit --no-fund
+          npx electron-builder --dir --publish never
+          app=$(ls -d dist/mac*/PianoScribe.app)
+          mv "$WORK/payload" "$app/Contents/Resources/payload"
+          # No Apple Developer ID: sign ad hoc so Apple Silicon runs the bundle's code at all.
+          codesign --force --deep --sign - "$app"
+      - name: Smoke test (the hosted runner has no usable Apple GPU, so this runs on the processor)
+        run: |
+          app=$(ls -d desktop/dist/mac*/PianoScribe.app)
+          if ! "$app/Contents/MacOS/PianoScribe" "--smoke-test=$PWD/samples/fur_elise_opening.mp3" "--smoke-out=$WORK/smoke" --smoke-solo; then
+            tail -80 "$HOME/Library/Application Support/PianoScribe/backend.log" || true
+            exit 1
+          fi
+          cat "$WORK/smoke/smoke.json"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: smoke-macos
+          path: ${{ env.WORK }}/smoke
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Archive in parts
+        run: |
+          mkdir -p "$WORK/release"
+          cd desktop/dist/mac*
+          tar -czf - PianoScribe.app | split -b 1900m - "$WORK/release/PianoScribe-macos-arm64.tar.gz.part-"
+          cd "$WORK/release" && shasum -a 256 PianoScribe-macos-arm64.* > SHA256SUMS-macos.txt && ls -la
+      - name: Attach to the draft release
+        if: ${{ github.event_name == 'push' || inputs.release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" --draft --target "$GITHUB_SHA" --title "PianoScribe desktop ($RELEASE_TAG)" --notes-file desktop/RELEASE_NOTES.md
+          gh release upload "$RELEASE_TAG" "$WORK"/release/* --clobber

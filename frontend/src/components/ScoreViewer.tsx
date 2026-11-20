@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { artifactUrl } from "../api";
+import { shell } from "../desktop";
 import type { Job } from "../types";
 import { formatBytes } from "../validation";
 
@@ -20,9 +22,19 @@ function formatDuration(seconds: number): string {
 interface Props {
   job: Job;
   cached: boolean;
+  /** Desktop app: the PDF is printed by the shell rather than downloaded from the server. */
+  shellPdf?: boolean;
 }
 
-export function ScoreViewer({ job, cached }: Props) {
+export function ScoreViewer({ job, cached, shellPdf = false }: Props) {
+  const [pdfNote, setPdfNote] = useState<string | null>(null);
+  const bridge = shellPdf ? shell() : undefined;
+  const savePdf = async () => {
+    if (!bridge) return;
+    setPdfNote("Preparing PDF…");
+    const outcome = await bridge.savePdf(job.id, job.title);
+    setPdfNote(outcome.error ? `PDF failed: ${outcome.error}` : outcome.saved ? `Saved to ${outcome.path}` : null);
+  };
   const result = job.result;
   if (!result) return null;
   const total = Object.values(job.timings).reduce((sum, value) => sum + value, 0);
@@ -58,8 +70,14 @@ export function ScoreViewer({ job, cached }: Props) {
             {cached ? "Served instantly from cache." : `Ready in ${formatDuration(total)}.`} Click any note to play
             from there.
           </p>
+          {pdfNote && <p className="hint">{pdfNote}</p>}
         </div>
         <div className="downloads" aria-label="Downloads">
+          {bridge && (
+            <button type="button" className="button primary" onClick={savePdf}>
+              PDF
+            </button>
+          )}
           {DOWNLOADS.filter((d) => d.name in result.artifacts).map((d) => (
             <a
               key={d.name}

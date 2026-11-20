@@ -99,6 +99,14 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm worker p
 Storage is two named volumes: `app-data` (uploads, work files, finished scores) and `model-cache`
 (model weights).
 
+## Desktop app
+
+The same app runs on Windows (x64, NVIDIA GPU recommended) and on Macs with Apple Silicon as a
+desktop app with the models included, so nothing leaves your computer. It adds a **Models** panel:
+which device to run on, the solo-piano transcriber (tsumugi, or MuScriptor as an optional download),
+and how closely and densely songs are arranged. Builds come from the GitHub Action "Desktop app"
+as a draft release; see [desktop/README.md](desktop/README.md).
+
 ## Tests
 
 ```bash

@@ -55,6 +55,15 @@ from score_fixes import (
 )
 
 
+def best_device() -> str:
+    """NVIDIA GPU, else Apple GPU, else CPU."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def settle_lead_in(cover: Path, annotation: dict, out: Path) -> Path:
     """Move an accompaniment lead-in before the first downbeat onto it (see ``lead_in_to_settle``)."""
     from symusic import Score
@@ -232,7 +241,7 @@ def main() -> None:
     from piano_perf2score.hub import load_perf2score
     from piano_score.musicxml import write_musicxml
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(best_device())
     model, tokenizer, banned = load_perf2score(args.checkpoint, device)
     annotation = json.loads(Path(args.annotation).read_text(encoding="utf-8"))
     annotation = regularize_bars(annotation)

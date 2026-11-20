@@ -32,7 +32,8 @@ def _default_execute(store: JobStore, artifacts: ArtifactStore, settings: Settin
     def execute(job: Job) -> Job:
         from app.pipeline.runner import Pipeline
 
-        return Pipeline(job, store=store, artifacts=artifacts, settings=settings).run()
+        effective = settings.model_copy(update=job.options.models) if job.options.models else settings
+        return Pipeline(job, store=store, artifacts=artifacts, settings=effective).run()
 
     return execute
 

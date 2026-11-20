@@ -15,6 +15,15 @@ from pathlib import Path
 import torch
 
 
+def best_device() -> str:
+    """NVIDIA GPU, else Apple GPU, else CPU."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--audio", required=True)
@@ -24,7 +33,7 @@ def main() -> None:
 
     from piano_ar.sheetsage import SheetSageAnnotator
 
-    device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
+    device = best_device() if args.device == "auto" else args.device
     annotation = SheetSageAnnotator(None, device=device).annotate(Path(args.audio))
     out = Path(args.out)
     tmp = out.with_suffix(".json.tmp")

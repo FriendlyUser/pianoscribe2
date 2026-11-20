@@ -71,3 +71,76 @@ def test_a_failing_progress_callback_does_not_fail_the_step(tmp_path: Path) -> N
         raise ValueError("bad progress line")
 
     assert run_step("robust", py("print('fine')"), cwd=tmp_path, timeout=30, on_line=explode) == ["fine"]
+
+
+def test_a_timed_out_step_takes_its_helpers_down_with_it(tmp_path) -> None:  # noqa: ANN001
+    import sys
+    import time
+
+    import pytest
+
+    from app.models.runtime import ModelStepError, run_step
+
+    marker = tmp_path / "helper-still-running"
+    helper = tmp_path / "helper.py"
+    helper.write_text(f"import pathlib, time\ntime.sleep(3)\npathlib.Path({str(marker)!r}).touch()\n")
+    # The step starts a helper that would write a file after 3 s, then hangs itself.
+    step = tmp_path / "step.py"
+    step.write_text(
+        f"import subprocess, sys, time\nsubprocess.Popen([sys.executable, {str(helper)!r}])\ntime.sleep(60)\n"
+    )
+    script = str(step)
+    started = time.monotonic()
+    with pytest.raises(ModelStepError) as caught:
+        run_step("hang", [sys.executable, script], cwd=tmp_path, timeout=1.0)
+    assert caught.value.timed_out and time.monotonic() - started < 10
+    time.sleep(3.5)
+    assert not marker.exists()  # the helper was killed with the step
+
+
+def test_desktop_sandbox_runs_without_the_linux_limit_tools(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    import shutil
+    import sys
+
+    import pytest
+
+    from app.ingest import sandbox
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)  # as on Windows and macOS
+    strict = sandbox.ResourceLimits(memory_bytes=None, cpu_seconds=10, file_bytes=1 << 20, open_files=64)
+    with pytest.raises(RuntimeError):
+        sandbox.run_sandboxed([sys.executable, "-c", "print(1)"], cwd=tmp_path, timeout=10, limits=strict)
+    basic = sandbox.ResourceLimits(memory_bytes=None, cpu_seconds=10, file_bytes=1 << 20, open_files=64, required=False)
+    result = sandbox.run_sandboxed([sys.executable, "-c", "print('ok')"], cwd=tmp_path, timeout=10, limits=basic)
+    assert result.returncode == 0 and result.stdout.strip() == "ok"
+
+
+def test_one_interpreter_can_serve_every_model_program(tmp_path) -> None:  # noqa: ANN001
+    from app.config import Settings
+
+    shared = tmp_path / "python.exe"
+    settings = Settings(model_python=shared)
+    assert settings.tsumugi_python == shared and settings.cover_python == shared
+    default = Settings(model_python=None)
+    assert default.tsumugi_python.parent.parent.name == ".venv"
+
+
+def test_link_or_copy_falls_back_when_links_are_not_allowed(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    from pathlib import Path
+
+    from app.models.song import link_or_copy
+
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"RIFF....WAVE")
+
+    def refuse(*_: object, **__: object) -> None:
+        raise OSError(1314, "A required privilege is not held by the client")  # what Windows says
+
+    monkeypatch.setattr(Path, "symlink_to", refuse)
+    hard = tmp_path / "hard.wav"
+    link_or_copy(source, hard)
+    assert hard.read_bytes() == source.read_bytes()
+    monkeypatch.setattr("os.link", refuse)
+    copied = tmp_path / "copied.wav"
+    link_or_copy(source, copied)
+    assert copied.read_bytes() == source.read_bytes()

@@ -21,7 +21,8 @@ ARTIFACTS: dict[str, tuple[str, str]] = {
     "performance.mid": ("audio/midi", "performance.mid"),
     "transcription.mid": ("audio/midi", "transcription.mid"),
 }
-REQUIRED = ("score.pdf", "score.html", "score.musicxml")
+# score.pdf is not required: a desktop build leaves PDF output to its shell (Settings.pdf_renderer).
+REQUIRED = ("score.html", "score.musicxml")
 
 
 class ArtifactStore:

@@ -1,0 +1,27 @@
+{
+  "name": "pianoscribe-desktop",
+  "productName": "PianoScribe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PianoScribe desktop app: recordings to piano sheet music, on your own computer.",
+  "author": "PianoScribe",
+  "license": "UNLICENSED",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir --publish never"
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "electron-builder": "26.18.1"
+  },
+  "build": {
+    "appId": "com.pianoscribe.desktop",
+    "productName": "PianoScribe",
+    "files": ["main.cjs", "preload.cjs", "splash.html", "package.json"],
+    "asar": true,
+    "directories": { "output": "dist" },
+    "win": { "target": "dir", "signAndEditExecutable": true },
+    "mac": { "target": "dir", "identity": null, "category": "public.app-category.music" }
+  }
+}

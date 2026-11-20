@@ -137,6 +137,32 @@ its GPU kernels on first use (`torch.compile`), which is why the worker image ca
 
 Weights download on first use into the `model-cache` volume (about 4.5 GB) from Hugging Face.
 
+## Desktop app
+
+`desktop/` packages the same code as a desktop app for Windows and Apple Silicon Macs. The
+Electron shell starts `python -m app.desktop`. This is the FastAPI app with its dependencies
+overridden: an in-process Redis stand-in (fakeredis) for job state and live progress, a worker
+thread in place of Dramatiq, the built web interface served from the same port, and a
+`/api/desktop` router for the model settings. Desktop settings travel with each job
+(`JobOptions.models`) and are part of its cache key; on the server the field is absent, so
+server job ids and responses are unchanged.
+
+What differs from the server, and why:
+
+| Concern | Server | Desktop |
+|---|---|---|
+| Media sandbox | rlimits via util-linux (`PS_SANDBOX=strict`) | time limits only (`basic`): the tools do not exist on Windows/macOS |
+| Process control | process groups and SIGKILL | the same on macOS; `taskkill /T` on Windows (`app/proc.py`) |
+| PDF | CairoSVG in the worker | Chromium's print engine in the shell: no native graphics libraries to ship, and identical to the web viewer |
+| Stem separator audio | TorchCodec (FFmpeg shared libraries) | soundfile (`PS_AUDIO_IO=soundfile`, `model_scripts/song_transcribe.py`) |
+| Model weights | downloaded on first use | bundled at pinned revisions; models load offline (`PS_MODELS_OFFLINE`) |
+| Python | one environment per model program | one relocatable environment for everything (`PS_MODEL_PYTHON`) |
+
+Measured on the RTX 4060 laptop, the Windows build matches the Linux server: Für Elise 0.945 on
+both, and 0.878 against the human arrangement of the benchmark song (Linux: 0.872). Natively on
+Windows, the 4.4-minute benchmark song took 3 minutes 24 seconds; in Docker on the same machine
+it takes 6 to 9 minutes.
+
 ## Request and job lifecycle
 
 1. **Submit.** The browser validates extension, size and leading bytes (or the YouTube URL), then

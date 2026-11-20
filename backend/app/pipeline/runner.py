@@ -258,11 +258,15 @@ class Pipeline:
         self._report(Stage.ENGRAVING, 0.8, "Engraving sheet music", force=True)
         with self._timed("engrave"):
             exports = export_musicxml(
-                musicxml, title=self.job.title, summary=summary.text, page_size=self.settings.page_size
+                musicxml,
+                title=self.job.title,
+                summary=summary.text,
+                page_size=self.settings.page_size,
+                pdf=self.settings.pdf_renderer == "cairo",
             )
             files = {
                 "score.musicxml": musicxml.encode("utf-8"),
-                "score.pdf": exports.pdf,
+                **({"score.pdf": exports.pdf} if exports.pdf is not None else {}),
                 "score.html": exports.html.encode("utf-8"),
                 "score.mid": exports.midi,
                 "performance.mid": performance.read_bytes(),

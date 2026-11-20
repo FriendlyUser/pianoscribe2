@@ -34,6 +34,7 @@ StoreDep = Annotated[JobStore, Depends(deps.store_dep)]
 QueueDep = Annotated[JobQueue, Depends(deps.queue_dep)]
 ArtifactsDep = Annotated[ArtifactStore, Depends(deps.artifacts_dep)]
 AsyncRedisDep = Annotated[aioredis.Redis, Depends(deps.async_redis_dep)]
+ModelsDep = Annotated[dict[str, str | int | float] | None, Depends(deps.job_models_dep)]
 
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
 _HEARTBEAT_SECONDS = 15.0
@@ -72,6 +73,8 @@ def client_config(settings: SettingsDep) -> ClientConfig:
         allowed_extensions=sorted(ALLOWED_EXTENSIONS),
         youtube_enabled=settings.youtube_enabled,
         result_retention_seconds=settings.result_retention_seconds,
+        desktop=settings.desktop,
+        server_pdf=settings.pdf_renderer != "none",
     )
 
 
@@ -83,6 +86,7 @@ async def create_upload_job(
     queue: QueueDep,
     artifacts: ArtifactsDep,
     filename: Annotated[str, Query(min_length=1, max_length=255)],
+    models: ModelsDep,
     solo_piano: bool = False,
 ) -> SubmissionResponse:
     """Upload a media file as the raw request body (streamed straight to disk)."""
@@ -93,7 +97,7 @@ async def create_upload_job(
         declared_length=int(declared) if declared and declared.isdigit() else None,
         settings=settings,
     )
-    options = JobOptions(solo_piano=solo_piano)
+    options = JobOptions(solo_piano=solo_piano, models=models)
     source = JobSource(
         kind=SourceKind.UPLOAD,
         filename=upload.display_name,
@@ -121,14 +125,19 @@ async def create_upload_job(
 
 @router.post("/jobs/youtube", status_code=202)
 def create_youtube_job(
-    body: YouTubeRequest, settings: SettingsDep, store: StoreDep, queue: QueueDep, artifacts: ArtifactsDep
+    body: YouTubeRequest,
+    settings: SettingsDep,
+    store: StoreDep,
+    queue: QueueDep,
+    artifacts: ArtifactsDep,
+    models: ModelsDep,
 ) -> SubmissionResponse:
     if not settings.youtube_enabled:
         raise ValidationError(
             "youtube_disabled", "YouTube links are disabled on this server. Upload a file instead.", status=403
         )
     video_id = parse_video_id(body.url)
-    options = JobOptions(solo_piano=body.solo_piano)
+    options = JobOptions(solo_piano=body.solo_piano, models=models)
     submission = submit_job(
         job_id=youtube_job_id(video_id, options),
         source=JobSource(kind=SourceKind.YOUTUBE, video_id=video_id),

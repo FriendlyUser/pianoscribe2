@@ -73,6 +73,10 @@ export interface ClientConfig {
   allowed_extensions: string[];
   youtube_enabled: boolean;
   result_retention_seconds: number;
+  /** Desktop app only: shows the model settings. Absent from the web server's answer. */
+  desktop?: boolean;
+  /** False when PDFs come from the desktop shell's print engine instead of the server. */
+  server_pdf?: boolean;
 }
 
 export const DEFAULT_CONFIG: ClientConfig = {

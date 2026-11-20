@@ -9,9 +9,7 @@ console output is captured for the job log and parsed for progress.
 
 from __future__ import annotations
 
-import contextlib
 import os
-import signal
 import subprocess
 import threading
 import time
@@ -21,6 +19,7 @@ from pathlib import Path
 
 from app.errors import JobError
 from app.logging import get_logger
+from app.proc import group_kwargs, kill_tree
 
 log = get_logger(__name__)
 _TAIL_LINES = 40
@@ -39,6 +38,11 @@ class ModelStepError(RuntimeError):
     def out_of_memory(self) -> bool:
         text = "\n".join(self.tail).lower()
         return "out of memory" in text or "cuda oom" in text
+
+
+def _offline() -> dict[str, str]:
+    """Desktop builds pin their bundled weights: model programs must not look for newer ones online."""
+    return {"HF_HUB_OFFLINE": "1"} if os.environ.get("PS_MODELS_OFFLINE") == "1" else {}
 
 
 def run_step(
@@ -60,14 +64,14 @@ def run_step(
     process = subprocess.Popen(  # noqa: S603 - argv is assembled from configuration, never a shell string
         [str(a) for a in argv],
         cwd=str(cwd),
-        env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", **(env or {})},
+        env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", **_offline(), **(env or {})},
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         errors="replace",
-        start_new_session=True,
+        **group_kwargs(),
     )
     timed_out = threading.Event()
     finished = threading.Event()
@@ -76,8 +80,7 @@ def run_step(
         if finished.wait(timeout):
             return
         timed_out.set()
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
+        kill_tree(process)
 
     guard = threading.Thread(target=watchdog, name=f"{step}-watchdog", daemon=True)
     guard.start()
@@ -97,8 +100,7 @@ def run_step(
         returncode = process.wait()
     finally:
         finished.set()
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)  # reap any helper left behind
+        kill_tree(process)  # reap any helper left behind
     seconds = round(time.perf_counter() - started, 2)
     if timed_out.is_set():
         log.warning("model.step", step=step, outcome="timeout", seconds=seconds)

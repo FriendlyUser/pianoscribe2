@@ -45,10 +45,16 @@ class JobSource(BaseModel):
 
 class JobOptions(BaseModel):
     solo_piano: bool = False
+    # Model and arrangement settings chosen in the desktop app (see app.desktop.settings).
+    # None on the web server, where the server's own configuration applies.
+    models: dict[str, str | int | float] | None = Field(default=None, exclude_if=lambda value: value is None)
 
     def cache_fragment(self) -> str:
         """Stable encoding of every option that changes the output."""
-        return f"solo={int(self.solo_piano)}"
+        fragment = f"solo={int(self.solo_piano)}"
+        if self.models:
+            fragment += ";" + ",".join(f"{k}={self.models[k]}" for k in sorted(self.models))
+        return fragment
 
 
 class JobErrorInfo(BaseModel):

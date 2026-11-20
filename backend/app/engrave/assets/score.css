@@ -50,6 +50,8 @@ body.embed .bar { justify-content: center; }
   main { padding: 0; }
   .layout-compact { display: none !important; }
   .layout-print { display: block !important; max-width: none; }
-  .page { box-shadow: none; border-radius: 0; margin: 0; break-after: page; }
+  /* One engraved page per sheet: exactly the sheet's height, so rounding never spills onto a blank page. */
+  .page { box-shadow: none; border-radius: 0; margin: 0; break-after: page; height: 100vh; overflow: hidden; }
+  .page svg { width: 100%; height: 100%; }
   .page:last-child { break-after: auto; }
 }

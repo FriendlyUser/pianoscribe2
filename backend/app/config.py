@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -44,6 +45,9 @@ class Settings(BaseSettings):
     sandbox_cpu_seconds: int = 900
     sandbox_max_file_mb: int = 2048
     sandbox_max_open_files: int = 256
+    # strict: refuse to run a media tool without its resource limits (servers).
+    # basic: time limits only, where the limit tools do not exist (desktop builds on Windows/macOS).
+    sandbox: Literal["strict", "basic"] = "strict"
 
     # --- job orchestration ----------------------------------------------
     queue_name: str = "transcribe"
@@ -67,7 +71,15 @@ class Settings(BaseSettings):
     tsumugi_dir: Path = Path("/opt/models/tsumugi")
     cover_dir: Path = Path("/opt/models/tsumugi-piano-cover")
     scripts_dir: Path = Path("/app/model_scripts")
-    model_device: Literal["auto", "cuda", "cpu"] = "auto"
+    # One interpreter for every model program (desktop builds ship a single environment);
+    # unset, each program's own .venv is used.
+    model_python: Path | None = None
+    # Windows: FFmpeg's shared libraries, which the stem separator's audio loader needs.
+    ffmpeg_shared_dir: Path | None = None
+    # torchcodec: the stem separator reads audio through FFmpeg's shared libraries (servers).
+    # soundfile: through soundfile instead (desktop builds, which ship no FFmpeg libraries).
+    audio_io: Literal["torchcodec", "soundfile"] = "torchcodec"
+    model_device: Literal["auto", "cuda", "mps", "cpu"] = "auto"
     cover_checkpoint: str = "anime-song/tsumugi-piano-cover-v2"
     # Windows per batch in transcription; 2 fits an 8 GB card.
     tsumugi_window_batch_size: int = 2
@@ -102,15 +114,22 @@ class Settings(BaseSettings):
     solo_section_bars: int = 64
 
     page_size: Literal["A4", "Letter"] = "A4"
+    # cairo: the worker writes score.pdf. none: no server-side PDF; a desktop shell prints
+    # the score page with its own browser engine instead.
+    pdf_renderer: Literal["cairo", "none"] = "cairo"
+    # Running inside the desktop app (app.desktop): enables its settings panel and API.
+    desktop: bool = False
+    # Solo piano transcription: tsumugi, or MuScriptor (gated download, see docs/MODELS.md).
+    solo_transcriber: Literal["tsumugi", "muscriptor-small", "muscriptor-medium", "muscriptor-large"] = "tsumugi"
 
     # --- derived --------------------------------------------------------
     @property
     def tsumugi_python(self) -> Path:
-        return self.tsumugi_dir / ".venv" / "bin" / "python"
+        return self.model_python or _venv_python(self.tsumugi_dir / ".venv")
 
     @property
     def cover_python(self) -> Path:
-        return self.cover_dir / ".venv" / "bin" / "python"
+        return self.model_python or _venv_python(self.cover_dir / ".venv")
 
     @property
     def max_upload_bytes(self) -> int:
@@ -131,6 +150,10 @@ class Settings(BaseSettings):
     def ensure_dirs(self) -> None:
         for path in (self.uploads_dir, self.work_dir, self.artifacts_dir, self.models_dir):
             path.mkdir(parents=True, exist_ok=True)
+
+
+def _venv_python(venv: Path) -> Path:
+    return venv / "Scripts" / "python.exe" if sys.platform == "win32" else venv / "bin" / "python"
 
 
 @lru_cache

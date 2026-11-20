@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, getConfig, watchJob } from "./api";
 import { JobProgress } from "./components/JobProgress";
+import { ModelSettings } from "./components/ModelSettings";
 import { ScoreViewer } from "./components/ScoreViewer";
 import { SubmitForm } from "./components/SubmitForm";
 import { forgetJob, loadRecent, rememberJob, type RecentJob } from "./recent";
 import { DEFAULT_CONFIG, type ClientConfig, type Job, type Submission } from "./types";
 
 const jobIdFromHash = () => /^#\/job\/([0-9a-f]{32})$/.exec(window.location.hash)?.[1] ?? null;
+const modelsFromHash = () => window.location.hash === "#/models";
 
 export function App() {
   const [config, setConfig] = useState<ClientConfig>(DEFAULT_CONFIG);
   const [jobId, setJobId] = useState<string | null>(jobIdFromHash);
+  const [modelsOpen, setModelsOpen] = useState(modelsFromHash);
   const [job, setJob] = useState<Job | null>(null);
   const [cached, setCached] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -18,7 +21,10 @@ export function App() {
 
   useEffect(() => {
     getConfig().then(setConfig).catch(() => undefined);
-    const onHash = () => setJobId(jobIdFromHash());
+    const onHash = () => {
+      setJobId(jobIdFromHash());
+      setModelsOpen(modelsFromHash());
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -63,15 +69,23 @@ export function App() {
           </span>
           PianoScribe
         </a>
-        {active && (
-          <button type="button" className="button ghost" onClick={reset}>
-            New transcription
-          </button>
-        )}
+        <span className="masthead-actions">
+          {config.desktop && !modelsOpen && (
+            <a className="button ghost" href="#/models">
+              Models
+            </a>
+          )}
+          {active && (
+            <button type="button" className="button ghost" onClick={reset}>
+              New transcription
+            </button>
+          )}
+        </span>
       </header>
 
       <main>
-        {!active && (
+        {modelsOpen && config.desktop && <ModelSettings onClose={reset} />}
+        {!active && !modelsOpen && (
           <>
             <section className="intro">
               <h1>Turn a recording into piano sheet music</h1>
@@ -108,12 +122,18 @@ export function App() {
         )}
         {active && !loadError && !job && <section className="card loading">Loading…</section>}
         {active && !loadError && job && job.status !== "succeeded" && <JobProgress job={job} onReset={reset} />}
-        {active && !loadError && job && job.status === "succeeded" && <ScoreViewer job={job} cached={cached} />}
+        {active && !loadError && job && job.status === "succeeded" && <ScoreViewer job={job} cached={cached} shellPdf={config.server_pdf === false} />}
       </main>
 
       <footer className="footnote">
-        Files are deleted after processing; scores are kept for{" "}
-        {Math.round(config.result_retention_seconds / 86400)} days. Only transcribe music you have the right to use.
+        {config.desktop ? (
+          "Everything runs on this computer. Only transcribe music you have the right to use."
+        ) : (
+          <>
+            Files are deleted after processing; scores are kept for{" "}
+            {Math.round(config.result_retention_seconds / 86400)} days. Only transcribe music you have the right to use.
+          </>
+        )}
       </footer>
     </div>
   );

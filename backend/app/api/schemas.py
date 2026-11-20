@@ -35,3 +35,7 @@ class ClientConfig(BaseModel):
     allowed_extensions: list[str]
     youtube_enabled: bool
     result_retention_seconds: int
+    # Desktop app only: show the model settings panel.
+    desktop: bool = False
+    # False when the score PDF comes from the desktop shell's print engine rather than the server.
+    server_pdf: bool = True
