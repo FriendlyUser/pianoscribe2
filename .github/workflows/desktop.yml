@@ -73,7 +73,7 @@ jobs:
         with:
           name: web
           path: frontend/dist
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: false
@@ -148,7 +148,7 @@ jobs:
         with:
           name: web
           path: frontend/dist
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: false
