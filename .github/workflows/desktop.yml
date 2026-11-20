@@ -64,10 +64,12 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 180
     env:
-      WORK: ${{ github.workspace }}\..\build
-      UV_CACHE_DIR: ${{ github.workspace }}\..\uv-cache
       PYTHONUTF8: "1"
     steps:
+      - name: Work folders (outside the checkout, on the runner's large drive)
+        run: |
+          Add-Content $env:GITHUB_ENV "WORK=$env:RUNNER_TEMP\build"
+          Add-Content $env:GITHUB_ENV "UV_CACHE_DIR=$env:RUNNER_TEMP\uv-cache"
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
@@ -139,10 +141,11 @@ jobs:
     if: ${{ github.event_name == 'push' || inputs.platforms != 'windows' }}
     runs-on: macos-15
     timeout-minutes: 180
-    env:
-      WORK: ${{ github.workspace }}/../build
-      UV_CACHE_DIR: ${{ github.workspace }}/../uv-cache
     steps:
+      - name: Work folders (outside the checkout)
+        run: |
+          echo "WORK=$RUNNER_TEMP/build" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$RUNNER_TEMP/uv-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:

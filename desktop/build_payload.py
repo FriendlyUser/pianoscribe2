@@ -136,14 +136,23 @@ def github_source(repo: str, commit: str, target: Path) -> None:
 
 
 def materialize(hub: Path) -> None:
-    """Hugging Face caches link snapshots to blobs; copy the files in so the payload has no links."""
+    """Hugging Face caches link snapshots to blobs; copy the files in so the payload has no links.
+
+    Blobs live in each repository's ``blobs/`` folder and, for large files fetched through Xet
+    (huggingface_hub 1.x and later), in one shared ``hub/blobs/`` store. Both go once the
+    snapshots hold real files, or every large weight file would ship twice.
+    """
     for repo in hub.glob("models--*"):
         for link in [p for p in (repo / "snapshots").rglob("*") if p.is_symlink()]:
-            data = link.resolve().read_bytes()
+            source = link.resolve()
             link.unlink()
-            link.write_bytes(data)
+            shutil.copyfile(source, link)
         shutil.rmtree(repo / "blobs", ignore_errors=True)
-    shutil.rmtree(hub / ".locks", ignore_errors=True)
+    for store in (hub / "blobs", hub / ".locks", hub.parent / "xet"):
+        shutil.rmtree(store, ignore_errors=True)
+    leftover = [p for p in hub.rglob("*") if p.is_symlink()]
+    if leftover:
+        raise SystemExit(f"links left in the model cache: {leftover[:3]}")
 
 
 def weights(models: Path, source: Path | None, move: bool) -> None:
