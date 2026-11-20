@@ -31,6 +31,9 @@ The GitHub Action `.github/workflows/desktop.yml` builds both apps, runs a headl
 each (it transcribes `samples/fur_elise_opening.mp3` through the real app and prints the PDF) and
 attaches them to a draft release in parts under 2 GiB. Run it from the Actions tab, or push a tag
 named `desktop-v*`.
+A run takes about 40 minutes (most of it compressing the Windows app). On the first full run
+the Windows smoke test took 4.5 minutes on the runner's processor; the macOS one ran on the
+runner's Apple GPU in 1.5 minutes, which also exercises the Apple GPU code path.
 
 To build by hand on the target platform (needs uv, Node 24, Git and Python with
 `huggingface_hub`):

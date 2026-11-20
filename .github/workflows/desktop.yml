@@ -178,7 +178,7 @@ jobs:
           mv "$WORK/payload" "$app/Contents/Resources/payload"
           # No Apple Developer ID: sign ad hoc so Apple Silicon runs the bundle's code at all.
           codesign --force --deep --sign - "$app"
-      - name: Smoke test (the hosted runner has no usable Apple GPU, so this runs on the processor)
+      - name: Smoke test (on the runner's Apple GPU when it exposes one; smoke.json records which)
         run: |
           app=$(ls -d desktop/dist/mac*/PianoScribe.app)
           if ! "$app/Contents/MacOS/PianoScribe" "--smoke-test=$PWD/samples/fur_elise_opening.mp3" "--smoke-out=$WORK/smoke" --smoke-solo; then
