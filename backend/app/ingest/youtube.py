@@ -30,8 +30,14 @@ _SHORT_HOSTS = {"youtu.be"}
 _PATH_PREFIXES = ("/shorts/", "/embed/", "/live/", "/v/")
 _MAX_URL_LENGTH = 2048
 
-# stderr fragments that mean retrying cannot help, with the message shown to the user.
+# stderr fragments that mean retrying cannot help, with the message shown to the user; the first
+# that matches counts. YouTube's refusals of a server come first: they arrive as "Video
+# unavailable. This content isn't available, try again later." for any video, public or not.
 _PERMANENT: list[tuple[str, str, str]] = [
+    ("confirm you’re not a bot", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
+    ("confirm you're not a bot", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
+    ("content isn’t available", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
+    ("content isn't available", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
     ("private video", "video_private", "This video is private."),
     ("video unavailable", "video_unavailable", "This video is unavailable."),
     ("has been removed", "video_unavailable", "This video has been removed."),
@@ -41,11 +47,6 @@ _PERMANENT: list[tuple[str, str, str]] = [
     ("requires payment", "video_paid", "This video requires payment."),
     ("live event will begin", "video_not_started", "This live stream has not started yet."),
     ("copyright", "video_blocked", "This video is blocked on copyright grounds."),
-    ("confirm you’re not a bot", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
-    ("confirm you're not a bot", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
-    # What YouTube answers an address it has flagged (cloud servers, CI runners), for any video.
-    ("content isn’t available", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
-    ("content isn't available", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
 ]  # fmt: skip
 
 
@@ -160,6 +161,7 @@ def _with_retries(label: str, args: list[str], cwd: Path, timeout: float, settin
             return last
         permanent = classify_failure(last.stderr)
         if permanent is not None:
+            log.warning("youtube.refused", step=label, code=permanent.code, stderr=last.stderr[-400:])
             raise permanent
         log.warning(
             "youtube.attempt_failed", step=label, attempt=attempt, timed_out=last.timed_out,

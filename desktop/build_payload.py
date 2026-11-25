@@ -47,7 +47,7 @@ HUB_REPOS = {
     ),
     "anime-song/tsumugi-piano-cover-v2": ("bd9ad18e8ce6fa0c4f2f7c29715a039359e19db0", ["*"]),
 }  # fmt: skip
-YTDLP = "2026.10.26"
+YTDLP = "2026.11.23"
 DENO = "v2.9.8"
 FFMPEG_MAC = "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2"
 FFMPEG_WIN = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
