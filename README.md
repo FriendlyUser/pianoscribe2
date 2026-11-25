@@ -183,8 +183,9 @@ curl -O "http://localhost:8080/api/jobs/JOB_ID/artifacts/score.pdf?download=true
 piano tutorial video and runs the same CLI on a GitHub runner, on its processor: Actions tab >
 Piano tutorial video > Run workflow. The score comes back as the run's artifact `score` (kept for
 3 days; in a public repository, any signed-in GitHub user can download it while it is kept), with
-the reading's checks in the run's summary. If YouTube asks the runner to sign in, put a
-`cookies.txt` for youtube.com into the repository secret `YOUTUBE_COOKIES`.
+the reading's checks in the run's summary. YouTube refuses many runners (the run fails with
+`youtube_blocked`); put a `cookies.txt` for youtube.com, exported from a browser signed in to
+YouTube, into the repository secret `YOUTUBE_COOKIES` to get past that.
 
 Artifacts per job: `score.pdf`, `score.html`, `score.musicxml`, `score.mid` (the score as MIDI),
 `performance.mid` (the piano part before notation, with original timing and dynamics) and, for

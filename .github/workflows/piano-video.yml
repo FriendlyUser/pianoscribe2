@@ -7,10 +7,10 @@
 # to the run as the artifact "score", kept for 3 days. In a public repository anyone signed in
 # to GitHub can download a run's artifacts while they are kept.
 #
-# YouTube sometimes refuses downloads from runners ("Sign in to confirm you're not a bot"; the
-# run then fails with youtube_blocked). Exporting youtube.com's cookies from a browser as
-# cookies.txt (Netscape format; a spare account is safest) into the repository secret
-# YOUTUBE_COOKIES gets past that.
+# YouTube refuses downloads from many runners ("This content isn't available" or "Sign in to
+# confirm you're not a bot", for any video; the run then fails with youtube_blocked). Exporting
+# youtube.com's cookies from a browser signed in to YouTube as cookies.txt (Netscape format; a
+# spare account is safest) into the repository secret YOUTUBE_COOKIES gets past that.
 #
 # On pull requests that change the reader or the score writer, and on pushes of such changes to
 # working branches (claude/**), the same setup instead reads a rendered video whose every note is
@@ -156,7 +156,7 @@ jobs:
           args=(transcribe "$URL" "$SCORE" --video --work "$RUNNER_TEMP/work")
           if [ -n "$TITLE" ]; then args+=(--title "$TITLE"); fi
           mkdir -p "$SCORE"
-          python -m app.cli "${args[@]}" > "$RUNNER_TEMP/report.json"
+          python -m app.cli "${args[@]}" > "$RUNNER_TEMP/report.json" 2> >(tee "$RUNNER_TEMP/cli.log" >&2)
           mv "$RUNNER_TEMP/report.json" "$SCORE/report.json"
           # What was read from the picture, and the beats, bars and keys heard: for checking the score.
           find "$RUNNER_TEMP/work" -maxdepth 3 \( -name visual.json -o -name annotation.json -o -name keys.json \) \
@@ -172,7 +172,15 @@ jobs:
 
           path = Path(os.environ["SCORE"], "report.json")
           if not path.is_file():
-              print("No score: see the log of the step that failed.")
+              log = Path(os.environ["RUNNER_TEMP"], "cli.log")
+              failed = [line for line in log.read_text().splitlines() if line.startswith("failed (")] if log.is_file() else []
+              print(f"**No score.** {failed[-1] if failed else 'See the log of the step that failed.'}")
+              if failed and "(youtube_blocked)" in failed[-1]:
+                  print(
+                      "\nYouTube refused this runner. Save a cookies.txt for youtube.com (exported from a"
+                      " browser signed in to YouTube; a spare account is safest) as the repository secret"
+                      " `YOUTUBE_COOKIES` and run the workflow again, or read the video from an uploaded file."
+                  )
               raise SystemExit
           report = json.loads(path.read_text())
           video = report.get("video") or {}

@@ -43,6 +43,9 @@ _PERMANENT: list[tuple[str, str, str]] = [
     ("copyright", "video_blocked", "This video is blocked on copyright grounds."),
     ("confirm you’re not a bot", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
     ("confirm you're not a bot", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
+    # What YouTube answers an address it has flagged (cloud servers, CI runners), for any video.
+    ("content isn’t available", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
+    ("content isn't available", "youtube_blocked", "YouTube is refusing downloads from this server right now. Upload the file instead."),
 ]  # fmt: skip
 
 
