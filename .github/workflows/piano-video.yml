@@ -1,0 +1,212 @@
+# Turns a piano-tutorial video on YouTube (notes falling onto a keyboard) into sheet music on a
+# GitHub runner: Actions tab > "Piano tutorial video" > Run workflow, and paste the link.
+#
+# The notes are read from the picture (backend/app/visual) and written down by rule; only the
+# beats, the bar lines and the key come from a model (SheetSage2-Refined), which runs on the
+# runner's processor. The score (PDF, MusicXML, MIDI) and the facts of the reading are attached
+# to the run as the artifact "score", kept for 3 days. In a public repository anyone signed in
+# to GitHub can download a run's artifacts while they are kept.
+#
+# YouTube refuses downloads from many runners ("This content isn't available" or "Sign in to
+# confirm you're not a bot", for any video; the run then fails with youtube_blocked). Exporting
+# youtube.com's cookies from a browser signed in to YouTube as cookies.txt (Netscape format; a
+# spare account is safest) into the repository secret YOUTUBE_COOKIES gets past that.
+#
+# On pull requests that change the reader or the score writer, and on pushes of such changes to
+# working branches (claude/**), the same setup instead reads a rendered video whose every note is
+# known and checks the score against the piece (backend/tests/grounded/test_piano_video.py). A
+# push also lets a branch's version of this workflow be run with a link before it is merged:
+#   gh workflow run piano-video.yml --ref BRANCH -f url=https://www.youtube.com/watch?v=...
+name: Piano tutorial video
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: YouTube link to a piano-tutorial video
+        required: true
+        type: string
+      title:
+        description: Title for the score (default the video's own)
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/piano-video.yml
+      - backend/app/visual/**
+      - backend/app/pipeline/**
+      - backend/app/ingest/youtube.py
+      - backend/model_scripts/exact_score.py
+      - backend/model_scripts/notate_exact.py
+      - backend/requirements/cover-env-cpu.txt
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/piano-video.yml
+      - backend/app/visual/**
+      - backend/app/pipeline/**
+      - backend/app/ingest/youtube.py
+      - backend/model_scripts/exact_score.py
+      - backend/model_scripts/notate_exact.py
+      - backend/requirements/cover-env-cpu.txt
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_VERSION: "0.13.8"
+  PYTHON_VERSION: "3.12"
+  DENO_VERSION: v2.9.8
+  # The model program and weights at the revisions the rest of the app pins
+  # (backend/Dockerfile, desktop/build_payload.py).
+  COVER_REPO: anime-song/tsumugi-piano-cover
+  COVER_REF: 36f50c1d76ac36b11c7c9de701d231649ba17680
+  SHEETSAGE_REPO: anime-song/SheetSage2-Refined
+  SHEETSAGE_REVISION: 5e9c494941b8c0bb322d9f17f365a6f886d5e562
+
+jobs:
+  score:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'Score a YouTube video' || 'Read a rendered video' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+      - name: Folders and settings
+        run: |
+          {
+            echo "PS_COVER_DIR=$RUNNER_TEMP/models/tsumugi-piano-cover"
+            echo "PS_SCRIPTS_DIR=$GITHUB_WORKSPACE/backend/model_scripts"
+            echo "PS_DATA_DIR=$RUNNER_TEMP/data"
+            echo "PS_MODELS_DIR=$RUNNER_TEMP/models"
+            echo "PS_MODEL_DEVICE=cpu"
+            echo "PS_LOG_FORMAT=console"
+            echo "HF_HOME=$RUNNER_TEMP/models/hf"
+            echo "HF_HUB_DISABLE_TELEMETRY=1"
+            echo "PYTHONPATH=$GITHUB_WORKSPACE/backend"
+            echo "SCORE=$RUNNER_TEMP/score"
+          } >> "$GITHUB_ENV"
+      - name: System packages (ffmpeg; fonts for the PDF)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg libcairo2 fontconfig fonts-liberation2 fonts-noto-cjk
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - name: Deno (the JavaScript runtime yt-dlp needs for YouTube)
+        run: |
+          url="https://github.com/denoland/deno/releases/download/$DENO_VERSION/deno-x86_64-unknown-linux-gnu.zip"
+          curl -fsSL -o "$RUNNER_TEMP/deno.zip" "$url"
+          digest=$(curl -fsSL "$url.sha256sum" | grep -oE '[0-9a-fA-F]{64}' | head -1)
+          echo "$digest  $RUNNER_TEMP/deno.zip" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          unzip -q "$RUNNER_TEMP/deno.zip" -d "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: App environment (the worker's locked packages, yt-dlp included)
+        run: |
+          uv venv --python "$PYTHON_VERSION" "$RUNNER_TEMP/app"
+          uv pip install --python "$RUNNER_TEMP/app/bin/python" --require-hashes \
+            -r backend/requirements/worker.txt -r backend/requirements/dev.txt
+          echo "$RUNNER_TEMP/app/bin" >> "$GITHUB_PATH"
+      - name: Model environment (tsumugi-piano-cover, on the processor)
+        run: |
+          mkdir -p "$PS_COVER_DIR"
+          curl -fsSL "https://codeload.github.com/$COVER_REPO/tar.gz/$COVER_REF" | tar -xz --strip-components=1 -C "$PS_COVER_DIR"
+          rm -rf "$PS_COVER_DIR/web" "$PS_COVER_DIR/docs" "$PS_COVER_DIR/notebooks"
+          uv venv --python "$PYTHON_VERSION" "$PS_COVER_DIR/.venv"
+          uv pip install --python "$PS_COVER_DIR/.venv/bin/python" -r backend/requirements/cover-env-cpu.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
+          "$PS_COVER_DIR/.venv/bin/python" -c "import torch; print('torch', torch.__version__)"
+      - name: Weights (SheetSage2-Refined at the pinned revision)
+        run: |
+          "$PS_COVER_DIR/.venv/bin/python" - <<'EOF'
+          import os
+          from pathlib import Path
+
+          from sheetsage2_refined.pipeline import model_folder
+
+          repo, revision = os.environ["SHEETSAGE_REPO"], os.environ["SHEETSAGE_REVISION"]
+          print(model_folder(repo, revision))
+          refs = Path(os.environ["HF_HOME"], "hub", f"models--{repo.replace('/', '--')}", "refs")
+          refs.mkdir(parents=True, exist_ok=True)
+          (refs / "main").write_text(revision)  # offline lookups of "main" resolve to the pinned revision
+          EOF
+          echo "HF_HUB_OFFLINE=1" >> "$GITHUB_ENV"
+
+      - name: Read a rendered video whose every note is known
+        if: github.event_name != 'workflow_dispatch'
+        working-directory: backend
+        run: python -m pytest -m grounded tests/grounded/test_piano_video.py -p no:cacheprovider
+
+      - name: Score the video
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          URL: ${{ inputs.url }}
+          TITLE: ${{ inputs.title }}
+          COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          if [ -n "$COOKIES" ]; then
+            (umask 077 && printf '%s\n' "$COOKIES" > "$RUNNER_TEMP/cookies.txt")
+            export PS_YOUTUBE_COOKIES_FILE="$RUNNER_TEMP/cookies.txt"
+          fi
+          args=(transcribe "$URL" "$SCORE" --video --work "$RUNNER_TEMP/work")
+          if [ -n "$TITLE" ]; then args+=(--title "$TITLE"); fi
+          mkdir -p "$SCORE"
+          python -m app.cli "${args[@]}" > "$RUNNER_TEMP/report.json" 2> >(tee "$RUNNER_TEMP/cli.log" >&2)
+          mv "$RUNNER_TEMP/report.json" "$SCORE/report.json"
+          # What was read from the picture, and the beats, bars and keys heard: for checking the score.
+          find "$RUNNER_TEMP/work" -maxdepth 3 \( -name visual.json -o -name annotation.json -o -name keys.json \) \
+            -exec cp {} "$SCORE/" \;
+          rm -f "$RUNNER_TEMP/cookies.txt"
+      - name: Summary
+        if: always() && github.event_name == 'workflow_dispatch'
+        run: |
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["SCORE"], "report.json")
+          if not path.is_file():
+              log = Path(os.environ["RUNNER_TEMP"], "cli.log")
+              failed = [line for line in log.read_text().splitlines() if line.startswith("failed (")] if log.is_file() else []
+              print(f"**No score.** {failed[-1] if failed else 'See the log of the step that failed.'}")
+              if failed and "(youtube_blocked)" in failed[-1]:
+                  print(
+                      "\nYouTube refused this runner. Save a cookies.txt for youtube.com (exported from a"
+                      " browser signed in to YouTube; a spare account is safest) as the repository secret"
+                      " `YOUTUBE_COOKIES` and run the workflow again, or read the video from an uploaded file."
+                  )
+              raise SystemExit
+          report = json.loads(path.read_text())
+          video = report.get("video") or {}
+          print(f"## {report.get('title') or 'Score'}\n")
+          print("| | |\n|---|---|")
+          rows = {
+              "Notes read": f"{video.get('notes')} ({video.get('right_hand')} right hand, {video.get('left_hand')} left)",
+              "Confirmed by the keys lighting up": video.get("confirmed_by_keys"),
+              "Keyboard shown": f"{video.get('lowest_key')} to {video.get('highest_key')}",
+              "Octave from": video.get("octave_from"),
+              "Hands from": video.get("hands_from"),
+              "Notes kept in the score / backed by a reading": f"{video.get('score_kept')} / {video.get('score_backed')}",
+              "Key": report.get("key"),
+              "Time signature": report.get("time_signature"),
+              "Tempo": f"{report.get('tempo_unit')} = {report.get('tempo_bpm')}",
+              "Bars": report.get("measures"),
+              "Seconds": json.dumps(report.get("timings")),
+          }
+          for name, value in rows.items():
+              print(f"| {name} | {value} |")
+          print("\nThe score is in the artifact **score** of this run (kept for 3 days).")
+          EOF
+      - uses: actions/upload-artifact@v7
+        if: always() && github.event_name == 'workflow_dispatch'
+        with:
+          name: score
+          path: ${{ runner.temp }}/score
+          retention-days: 3
+          if-no-files-found: ignore

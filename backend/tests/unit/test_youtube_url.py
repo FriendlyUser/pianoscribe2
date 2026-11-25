@@ -84,6 +84,10 @@ def test_permanent_failures_are_not_retried() -> None:
     error = classify_failure("ERROR: [youtube] abc: Private video. Sign in if you've been granted access")
     assert error is not None and error.code == "video_private" and not error.retryable
     assert classify_failure("ERROR: [youtube] abc: Video unavailable") is not None
+    # Seen on a GitHub runner for a public video: the address is refused, so retrying cannot help.
+    for refusal in ("This content isn’t available.", "This content isn't available, try again later."):
+        blocked = classify_failure(f"ERROR: [youtube] 1-X1nMyPtck: {refusal}")
+        assert blocked is not None and blocked.code == "youtube_blocked" and not blocked.retryable
     assert classify_failure("ERROR: unable to download video data: HTTP Error 503: Service Unavailable") is None
     assert classify_failure("ERROR: Read timed out.") is None
 

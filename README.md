@@ -157,8 +157,9 @@ published arrangement of a copyrighted work, so it is not committed.
 ## Using it without the web UI
 
 ```bash
-# A local file straight to ./out (no queue, no Redis). Add --solo for solo piano, or
-# --video for a piano tutorial video (an MP4 or MOV whose picture is to be read).
+# A local file or a YouTube link straight to ./out (no queue, no Redis). Add --solo for solo
+# piano, or --video for a piano tutorial video (an MP4 or MOV, or a YouTube link, whose picture
+# is to be read).
 mkdir -p out
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm -T \
   -v "$PWD/samples:/in:ro" worker sh -c \
@@ -176,6 +177,15 @@ curl -X POST --data-binary @tutorial.mp4 \
 curl -N http://localhost:8080/api/jobs/JOB_ID/events          # live progress (Server-Sent Events)
 curl -O "http://localhost:8080/api/jobs/JOB_ID/artifacts/score.pdf?download=true"
 ```
+
+**On GitHub Actions.** The workflow "Piano tutorial video"
+([.github/workflows/piano-video.yml](.github/workflows/piano-video.yml)) takes a YouTube link to a
+piano tutorial video and runs the same CLI on a GitHub runner, on its processor: Actions tab >
+Piano tutorial video > Run workflow. The score comes back as the run's artifact `score` (kept for
+3 days; in a public repository, any signed-in GitHub user can download it while it is kept), with
+the reading's checks in the run's summary. YouTube refuses many runners (the run fails with
+`youtube_blocked`); put a `cookies.txt` for youtube.com, exported from a browser signed in to
+YouTube, into the repository secret `YOUTUBE_COOKIES` to get past that.
 
 Artifacts per job: `score.pdf`, `score.html`, `score.musicxml`, `score.mid` (the score as MIDI),
 `performance.mid` (the piano part before notation, with original timing and dynamics) and, for

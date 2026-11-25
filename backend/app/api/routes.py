@@ -18,7 +18,7 @@ from app.config import Settings
 from app.errors import ValidationError
 from app.ingest.signatures import ALLOWED_EXTENSIONS, MediaKind, extension_of
 from app.ingest.upload import receive_upload, title_from_filename
-from app.ingest.youtube import parse_video_id
+from app.ingest.youtube import parse_video_id, placeholder_title
 from app.jobs.keys import upload_job_id, youtube_job_id
 from app.jobs.models import Job, JobOptions, JobSource, SourceKind
 from app.jobs.service import JobQueue, submit_job
@@ -147,7 +147,7 @@ def create_youtube_job(
         job_id=youtube_job_id(video_id, options),
         source=JobSource(kind=SourceKind.YOUTUBE, video_id=video_id),
         options=options,
-        title=f"YouTube video {video_id}",
+        title=placeholder_title(video_id),
         store=store,
         queue=queue,
         artifacts=artifacts,

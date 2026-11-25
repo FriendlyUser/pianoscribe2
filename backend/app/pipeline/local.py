@@ -1,4 +1,4 @@
-"""Run the pipeline on a local file with no queue and no Redis (CLI, tests, evaluation)."""
+"""Run the pipeline on a local file or a YouTube link with no queue and no Redis (CLI, CI, tests, evaluation)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ from typing import Any, cast
 
 from app.config import Settings
 from app.ingest.signatures import sniff
-from app.jobs.keys import upload_job_id
+from app.ingest.youtube import parse_video_id, placeholder_title
+from app.jobs.keys import upload_job_id, youtube_job_id
 from app.jobs.models import Job, JobOptions, JobSource, SourceKind
 from app.jobs.store import JobStore
 from app.pipeline.runner import Pipeline
@@ -46,7 +47,7 @@ def print_progress() -> Callable[[Job], None]:
 
 
 def run_local(
-    source: Path,
+    source: Path | str,
     out: Path,
     settings: Settings,
     *,
@@ -55,11 +56,41 @@ def run_local(
     title: str | None = None,
     on_update: Callable[[Job], None] | None = None,
 ) -> Job:
-    """Turn ``source`` into a score; the artifacts are copied into ``out``.
+    """Turn ``source``, a local file or a YouTube link, into a score; the artifacts are copied into ``out``.
 
     Work files live under ``settings.data_dir``. If a run fails, a second run with the
     same data directory resumes after the last finished model stage.
     """
+    options = JobOptions(solo_piano=solo, piano_video=video)
+    for path in (settings.uploads_dir, settings.work_dir, settings.artifacts_dir):
+        path.mkdir(parents=True, exist_ok=True)
+    job = (
+        _youtube_job(source, options, title) if isinstance(source, str) else _file_job(source, options, title, settings)
+    )
+    artifacts = ArtifactStore(settings.artifacts_dir)
+    store = LocalStore(job, on_update)
+    finished = Pipeline(job, store=cast(JobStore, store), artifacts=artifacts, settings=settings).run()
+    out.mkdir(parents=True, exist_ok=True)
+    for name in finished.result.artifacts if finished.result else {}:
+        stored = artifacts.path(job.id, name)
+        if stored is not None:
+            shutil.copyfile(stored, out / name)
+    return finished
+
+
+def _youtube_job(url: str, options: JobOptions, title: str | None) -> Job:
+    """The job for a YouTube link; the video is fetched by the pipeline, as for the web server."""
+    video_id = parse_video_id(url)
+    return Job(
+        id=youtube_job_id(video_id, options),
+        title=title or placeholder_title(video_id),
+        source=JobSource(kind=SourceKind.YOUTUBE, video_id=video_id),
+        options=options,
+    )
+
+
+def _file_job(source: Path, options: JobOptions, title: str | None, settings: Settings) -> Job:
+    """The job for a local file, stored as an upload is."""
     digest = hashlib.sha256()
     with source.open("rb") as fh:
         head = fh.read(4096)
@@ -69,11 +100,8 @@ def run_local(
     sha = digest.hexdigest()
     kind = sniff(head)
     extension = source.suffix.lower().lstrip(".")
-    options = JobOptions(solo_piano=solo, piano_video=video)
-    for path in (settings.uploads_dir, settings.work_dir, settings.artifacts_dir):
-        path.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, settings.uploads_dir / f"{sha}.{extension}")
-    job = Job(
+    return Job(
         id=upload_job_id(sha, options),
         title=title or source.stem.replace("_", " "),
         source=JobSource(
@@ -86,12 +114,3 @@ def run_local(
         ),
         options=options,
     )
-    artifacts = ArtifactStore(settings.artifacts_dir)
-    store = LocalStore(job, on_update)
-    finished = Pipeline(job, store=cast(JobStore, store), artifacts=artifacts, settings=settings).run()
-    out.mkdir(parents=True, exist_ok=True)
-    for name in finished.result.artifacts if finished.result else {}:
-        stored = artifacts.path(job.id, name)
-        if stored is not None:
-            shutil.copyfile(stored, out / name)
-    return finished
