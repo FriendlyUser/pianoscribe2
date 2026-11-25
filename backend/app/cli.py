@@ -1,6 +1,7 @@
 """Operator CLI.
 
 python -m app.cli transcribe INPUT OUTPUT_DIR [--solo | --video] [--work DIR]   run the pipeline locally, no queue
+    (INPUT: a recording or video file, or a YouTube link)
 python -m app.cli doctor                                              check the model environments and GPU
 python -m app.cli dead-letters                                        list dead-lettered jobs
 python -m app.cli requeue JOB_ID                                      retry a failed / dead-lettered job
@@ -21,13 +22,23 @@ from app.logging import configure_logging
 
 
 def _transcribe(args: argparse.Namespace) -> int:
-    from app.errors import JobError
+    from app.errors import JobError, ValidationError
+    from app.ingest.youtube import parse_video_id
     from app.pipeline.local import print_progress, run_local
 
-    source = Path(args.input).resolve()
-    if not source.is_file():
-        print(f"no such file: {source}", file=sys.stderr)
-        return 2
+    source: Path | str
+    if args.input.startswith(("http://", "https://")):
+        try:
+            parse_video_id(args.input)
+        except ValidationError as error:
+            print(error.message, file=sys.stderr)
+            return 2
+        source = args.input
+    else:
+        source = Path(args.input).resolve()
+        if not source.is_file():
+            print(f"no such file: {source}", file=sys.stderr)
+            return 2
     out = Path(args.output)
     scratch = Path(args.work).resolve() if args.work else Path(tempfile.mkdtemp(prefix="pianoscribe-"))
     try:
@@ -40,6 +51,7 @@ def _transcribe(args: argparse.Namespace) -> int:
             print(f"failed ({error.code}): {error.message}", file=sys.stderr)
             return 1
         report = {
+            "title": finished.title,
             **(finished.result.model_dump(exclude={"artifacts"}) if finished.result else {}),
             "timings": finished.timings,
             "output": str(out),
@@ -104,7 +116,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="pianoscribe")
     sub = parser.add_subparsers(dest="command", required=True)
     transcribe = sub.add_parser("transcribe", help="turn a local recording into a score, without the job queue")
-    transcribe.add_argument("input")
+    transcribe.add_argument("input", help="a recording or video file, or a YouTube link")
     transcribe.add_argument("output")
     transcribe.add_argument(
         "--solo", action="store_true", help="the recording is solo piano: transcribe, do not arrange"

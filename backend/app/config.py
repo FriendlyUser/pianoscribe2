@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     video_score_writer: Literal["exact", "model"] = "exact"
     # Largest picture fetched for a YouTube piano video.
     youtube_video_height: int = 1080
+    # A cookies.txt (Netscape format) handed to yt-dlp, for hosts YouTube asks to sign in, such
+    # as CI runners. Copied into each download's own folder, so the original is never written.
+    youtube_cookies_file: Path | None = None
 
     page_size: Literal["A4", "Letter"] = "A4"
     # cairo: the worker writes score.pdf. none: no server-side PDF; a desktop shell prints

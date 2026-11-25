@@ -9,6 +9,7 @@ port, path, credential or redirect target ever reaches the network layer.
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import time
@@ -101,6 +102,11 @@ def canonical_url(video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
+def placeholder_title(video_id: str) -> str:
+    """A YouTube job's title until the video's own title is known."""
+    return f"YouTube video {video_id}"
+
+
 def classify_failure(stderr: str) -> JobError | None:
     """Map downloader output to a permanent, user-facing error (None = transient)."""
     lowered = stderr.lower()
@@ -116,16 +122,31 @@ def backoff_delay(attempt: int, settings: Settings) -> float:
     return random.uniform(ceiling / 2, ceiling)  # noqa: S311 - jitter, not security
 
 
+_COOKIES = ".cookies.txt"  # the operator's cookies, copied into the download folder for one run
+
+
 def _base_args(settings: Settings) -> list[str]:
     return [
         settings.ytdlp_bin, "--ignore-config", "--no-playlist", "--no-warnings", "--no-progress",
         "--no-cache-dir", "--socket-timeout", "20", "--retries", "2", "--extractor-retries", "2",
         "--no-exec", "--restrict-filenames",
+        *(["--cookies", _COOKIES] if settings.youtube_cookies_file else []),
     ]  # fmt: skip
 
 
 def _run(args: list[str], cwd: Path, timeout: float, settings: Settings) -> SandboxResult:
-    return run_sandboxed(args, cwd=cwd, timeout=timeout, limits=ResourceLimits.for_downloader(settings), check=False)
+    cookies = cwd / _COOKIES
+    if settings.youtube_cookies_file:
+        # yt-dlp writes its cookie jar back when it exits: give it a private copy to write.
+        cwd.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(os.open(cookies, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as copy:
+            copy.write(settings.youtube_cookies_file.read_bytes())
+    try:
+        return run_sandboxed(
+            args, cwd=cwd, timeout=timeout, limits=ResourceLimits.for_downloader(settings), check=False
+        )
+    finally:
+        cookies.unlink(missing_ok=True)
 
 
 def _with_retries(label: str, args: list[str], cwd: Path, timeout: float, settings: Settings) -> SandboxResult:

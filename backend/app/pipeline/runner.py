@@ -113,7 +113,8 @@ class Pipeline:
             self._report(Stage.INGESTING, 0.1, "Downloading audio from YouTube", force=True)
             download_dir = self.workdir / "download"
             downloaded = youtube.download_audio(source.video_id, download_dir, self.settings)
-            self.job = self.store.update(self.job.id, title=downloaded.metadata.title) or self.job
+            if self.job.title == youtube.placeholder_title(source.video_id):  # not named by whoever asked
+                self.job = self.store.update(self.job.id, title=downloaded.metadata.title) or self.job
             raw, expected, cleanup = downloaded.path, None, download_dir
             if want_picture:
                 self._report(Stage.INGESTING, 0.4, "Downloading the video from YouTube", force=True)

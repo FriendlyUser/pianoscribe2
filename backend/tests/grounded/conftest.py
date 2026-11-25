@@ -49,6 +49,16 @@ def model_settings(tmp_path_factory: pytest.TempPathFactory) -> Settings:
 
 
 @pytest.fixture(scope="session")
+def cover_settings(tmp_path_factory: pytest.TempPathFactory) -> Settings:
+    """For tests that run only tsumugi-piano-cover's environment (beats, keys, the score writers),
+    such as a piano video's: CI installs just that one (.github/workflows/piano-video.yml)."""
+    settings = Settings(data_dir=tmp_path_factory.mktemp("data"), log_format="console")
+    if not settings.cover_python.is_file():
+        pytest.skip("the tsumugi-piano-cover environment is not installed here")
+    return settings
+
+
+@pytest.fixture(scope="session")
 def produce(model_settings: Settings, tmp_path_factory: pytest.TempPathFactory) -> Callable[..., Produced]:
     """produce(recording, solo=...) -> the pipeline's output for it (cached for the session)."""
     from app.pipeline.local import run_local

@@ -23,14 +23,14 @@ pytestmark = pytest.mark.grounded
 
 
 @pytest.fixture(scope="module")
-def ode(model_settings: Settings, tmp_path_factory: pytest.TempPathFactory) -> tuple[Job, Path]:
+def ode(cover_settings: Settings, tmp_path_factory: pytest.TempPathFactory) -> tuple[Job, Path]:
     from app.pipeline.local import run_local
 
     folder = tmp_path_factory.mktemp("piano-video")
     notes = piano_video.from_beats(synth.ode_to_joy(), synth.ODE_BPM)
     falling = [piano_video.VideoNote(n.pitch, n.start + 3.0, n.end + 3.0, n.hand) for n in notes]
     video = piano_video.render(falling, folder / "ode_to_joy.mp4")
-    job = run_local(video, folder / "out", model_settings, video=True, title="Ode to Joy")
+    job = run_local(video, folder / "out", cover_settings, video=True, title="Ode to Joy")
     return job, folder / "out" / "score.musicxml"
 
 
