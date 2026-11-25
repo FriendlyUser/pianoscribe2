@@ -16,6 +16,13 @@ const SOLO_STEPS: { stage: Stage; label: string }[] = [
   { stage: "engraving", label: "Writing the score" },
   { stage: "ready", label: "Ready" },
 ];
+const VIDEO_STEPS: { stage: Stage; label: string }[] = [
+  { stage: "ingesting", label: "Downloading and validating" },
+  { stage: "transcribing", label: "Reading the falling notes" },
+  { stage: "arranging", label: "Finding beats and bar lines" },
+  { stage: "engraving", label: "Writing the score" },
+  { stage: "ready", label: "Ready" },
+];
 const ORDER: Stage[] = ["queued", "ingesting", "separating", "transcribing", "arranging", "engraving", "ready"];
 
 function useElapsed(since: number, running: boolean): string {
@@ -68,7 +75,7 @@ export function JobProgress({ job, onReset }: Props) {
       </div>
       <progress className="overall" max={1} value={job.progress} aria-label="Overall progress" />
       <ol className="steps">
-        {(job.options.solo_piano ? SOLO_STEPS : SONG_STEPS).map((step) => {
+        {(job.options.piano_video ? VIDEO_STEPS : job.options.solo_piano ? SOLO_STEPS : SONG_STEPS).map((step) => {
           const index = ORDER.indexOf(step.stage);
           const state = reached > index ? "done" : reached === index ? "current" : "pending";
           const label = step.label;

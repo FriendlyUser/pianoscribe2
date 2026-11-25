@@ -16,7 +16,7 @@ from app.api import deps
 from app.api.schemas import ClientConfig, SubmissionResponse, YouTubeRequest
 from app.config import Settings
 from app.errors import ValidationError
-from app.ingest.signatures import ALLOWED_EXTENSIONS
+from app.ingest.signatures import ALLOWED_EXTENSIONS, MediaKind, extension_of
 from app.ingest.upload import receive_upload, title_from_filename
 from app.ingest.youtube import parse_video_id
 from app.jobs.keys import upload_job_id, youtube_job_id
@@ -88,8 +88,13 @@ async def create_upload_job(
     filename: Annotated[str, Query(min_length=1, max_length=255)],
     models: ModelsDep,
     solo_piano: bool = False,
+    piano_video: bool = False,
 ) -> SubmissionResponse:
     """Upload a media file as the raw request body (streamed straight to disk)."""
+    if piano_video and ALLOWED_EXTENSIONS.get(extension_of(filename)) not in (None, MediaKind.ISO_BMFF):
+        raise ValidationError(
+            "video_required", "The piano-video option reads the picture: upload an MP4 or MOV video.", status=415
+        )
     declared = request.headers.get("content-length")
     upload = await receive_upload(
         request.stream(),
@@ -97,7 +102,7 @@ async def create_upload_job(
         declared_length=int(declared) if declared and declared.isdigit() else None,
         settings=settings,
     )
-    options = JobOptions(solo_piano=solo_piano, models=models)
+    options = JobOptions(solo_piano=solo_piano, piano_video=piano_video, models=models)
     source = JobSource(
         kind=SourceKind.UPLOAD,
         filename=upload.display_name,
@@ -137,7 +142,7 @@ def create_youtube_job(
             "youtube_disabled", "YouTube links are disabled on this server. Upload a file instead.", status=403
         )
     video_id = parse_video_id(body.url)
-    options = JobOptions(solo_piano=body.solo_piano, models=models)
+    options = JobOptions(solo_piano=body.solo_piano, piano_video=body.piano_video, models=models)
     submission = submit_job(
         job_id=youtube_job_id(video_id, options),
         source=JobSource(kind=SourceKind.YOUTUBE, video_id=video_id),

@@ -1,5 +1,8 @@
 """The job pipeline: ingest -> transcribe -> arrange -> notate -> engrave.
 
+A piano-tutorial video takes a path of its own after ingest: its notes are read from the
+picture instead of being transcribed by ear, and written down as read.
+
 Each stage writes its output atomically into the job's working directory and
 is skipped when that output already exists, so a retried or redelivered job
 resumes after the last completed stage instead of repeating minutes of GPU
@@ -17,7 +20,7 @@ from pathlib import Path
 
 from app.config import Settings
 from app.errors import JobError
-from app.jobs.models import Job, JobResult, JobStatus, SourceKind, Stage
+from app.jobs.models import Job, JobResult, JobStatus, SourceKind, Stage, VideoReading
 from app.jobs.store import JobStore
 from app.logging import get_logger
 from app.models.runtime import ModelStepError, as_job_error
@@ -33,6 +36,31 @@ _SPANS: dict[Stage, tuple[float, float]] = {
     Stage.ARRANGING: (0.55, 0.75),
     Stage.ENGRAVING: (0.75, 1.0),
 }
+
+
+def _video_result(reading: object, musicxml: str) -> VideoReading:
+    """What the result page says about a piano video: what was read, how it was checked, and the score against it."""
+    from app.visual.check import score_fidelity
+    from app.visual.reader import VisualReading
+
+    assert isinstance(reading, VisualReading)
+    facts: dict[str, dict[str, object]] = reading.facts  # type: ignore[assignment]
+    notes, keys, keyboard = facts["notes"], facts["key_check"], facts["keyboard"]
+    kept, backed = score_fidelity(musicxml, (note.pitch for note in reading.notes))
+    return VideoReading(
+        notes=len(reading.notes),
+        right_hand=int(str(notes["right_hand"])),
+        left_hand=int(str(notes["left_hand"])),
+        confirmed_by_keys=int(str(keys["bars_confirmed"])) + int(str(notes["from_lit_keys_only"]))
+        if keys["keys_light"]
+        else None,
+        lowest_key=str(keyboard["lowest"]),
+        highest_key=str(keyboard["highest"]),
+        octave_from=str(facts["octave"]["source"]),
+        hands_from=str(notes["hands_from"]),
+        score_kept=round(kept, 4),
+        score_backed=round(backed, 4),
+    )
 
 
 class Pipeline:
@@ -74,9 +102,12 @@ class Pipeline:
         from app.ingest.signatures import MediaKind
 
         decoded = self.workdir / "audio.wav"
-        if decoded.exists():
+        # A piano video's picture is kept, next to the decoded sound, until its notes have been read.
+        want_picture = self.job.options.piano_video and not (self.workdir / "visual.json").exists()
+        if decoded.exists() and (not want_picture or self._picture() is not None):
             return decoded
         source = self.job.source
+        picture: Path | None = None
         if source.kind == SourceKind.YOUTUBE:
             assert source.video_id is not None
             self._report(Stage.INGESTING, 0.1, "Downloading audio from YouTube", force=True)
@@ -84,6 +115,9 @@ class Pipeline:
             downloaded = youtube.download_audio(source.video_id, download_dir, self.settings)
             self.job = self.store.update(self.job.id, title=downloaded.metadata.title) or self.job
             raw, expected, cleanup = downloaded.path, None, download_dir
+            if want_picture:
+                self._report(Stage.INGESTING, 0.4, "Downloading the video from YouTube", force=True)
+                picture = youtube.download_video(source.video_id, download_dir, self.settings)
         else:
             raw = self.settings.uploads_dir / f"{source.content_sha256}.{source.extension}"
             if not raw.is_file():
@@ -91,10 +125,17 @@ class Pipeline:
                     "source_expired", "The uploaded file is no longer stored on the server. Please upload it again."
                 )
             expected, cleanup = MediaKind(source.media_kind) if source.media_kind else None, raw
+            picture = raw if want_picture else None
         self._report(Stage.INGESTING, 0.6, "Validating and decoding audio", force=True)
         try:
             media.probe(raw, self.settings, expected=expected)
-            media.decode_audio(raw, decoded, self.settings)
+            if not decoded.exists():
+                media.decode_audio(raw, decoded, self.settings)
+            if picture is not None:
+                from app.visual.frames import probe_video
+
+                probe_video(picture, self.settings)  # no picture: say so now, before any model runs
+                shutil.move(str(picture), str(self.workdir / f"video{picture.suffix.lower()}"))
         finally:
             # Raw media is deleted as soon as it has been decoded (or rejected).
             if cleanup.is_dir():
@@ -102,6 +143,10 @@ class Pipeline:
             else:
                 cleanup.unlink(missing_ok=True)
         return decoded
+
+    def _picture(self) -> Path | None:
+        """The video file kept for reading notes from, if it is still there."""
+        return next(iter(sorted(self.workdir.glob("video.*"))), None)
 
     def _transcribe_progress(self) -> Callable[[float, str], None]:
         def report(fraction: float, message: str) -> None:
@@ -237,6 +282,61 @@ class Pipeline:
                 )
         return score, performance, {}
 
+    def _video(self, audio: Path) -> tuple[Path, Path, dict[str, object]]:
+        """Piano-tutorial video -> (score.musicxml, performance.mid, facts): read from the picture."""
+        from app.ingest.audio import read_wav
+        from app.models import song
+        from app.visual.reader import VisualReading, read_video, write_midi
+
+        reading_path = self.workdir / "visual.json"
+        performance = self.workdir / "performance.mid"
+        if not (reading_path.exists() and performance.exists()):
+            picture = self._picture()
+            if picture is None:
+                raise JobError(
+                    "source_expired", "The uploaded video is no longer stored on the server. Please upload it again."
+                )
+            self._report(Stage.TRANSCRIBING, 0.0, "Finding the keyboard", force=True)
+            with self._timed("read"):
+                reading = read_video(
+                    picture,
+                    self.settings,
+                    audio=read_wav(audio),
+                    progress=lambda fraction, message: self._report(Stage.TRANSCRIBING, fraction, message),
+                )
+            write_midi(reading.notes, performance)
+            reading.save(reading_path)
+        # Raw media is deleted as soon as it has been read.
+        for leftover in self.workdir.glob("video.*"):
+            leftover.unlink(missing_ok=True)
+        reading = VisualReading.load(reading_path)
+        annotation = self.workdir / "annotation.json"
+        if not annotation.exists():
+            self._report(Stage.ARRANGING, 0.0, "Finding beats and bar lines", force=True)
+            with self._timed("annotate"):
+                song.annotate_audio(audio, annotation, self.settings)
+        score = self.workdir / "score.musicxml"
+        if not score.exists():
+            keys = self._keys(audio)
+            self._report(Stage.ENGRAVING, 0.0, "Writing the score", force=True)
+            with self._timed("notate"):
+                if self.settings.video_score_writer == "exact":
+                    song.write_exact_score(
+                        reading_path, annotation, score, self.settings, title=self.job.title, keys=keys
+                    )
+                else:
+                    song.write_score(
+                        performance,
+                        annotation,
+                        None,
+                        score,
+                        self.settings,
+                        title=self.job.title,
+                        keys=keys,
+                        progress=lambda f: self._report(Stage.ENGRAVING, 0.7 * f, "Writing the score"),
+                    )
+        return score, performance, {"reading": reading}
+
     # -- orchestration ----------------------------------------------------
 
     def run(self) -> Job:
@@ -248,8 +348,13 @@ class Pipeline:
         with self._timed("ingest"):
             audio = self._ingest()
         try:
-            solo = self.job.options.solo_piano
-            score_path, performance, facts = self._solo(audio) if solo else self._arrangement(audio)
+            options = self.job.options
+            if options.piano_video:
+                score_path, performance, facts = self._video(audio)
+            elif options.solo_piano:
+                score_path, performance, facts = self._solo(audio)
+            else:
+                score_path, performance, facts = self._arrangement(audio)
         except ModelStepError as error:
             raise as_job_error(error) from error
 
@@ -278,8 +383,10 @@ class Pipeline:
 
         samples, rate = read_wav(audio)
         fidelity_value = facts.get("melody_fidelity")
+        reading = facts.get("reading")
         result = JobResult(
-            mode="transcription" if self.job.options.solo_piano else "arrangement",
+            mode="video" if options.piano_video else "transcription" if options.solo_piano else "arrangement",
+            video=_video_result(reading, musicxml) if reading is not None else None,
             key=summary.key,
             key_changes=summary.key_changes,
             time_signature=summary.time_signature,

@@ -10,6 +10,7 @@ from app.jobs.models import Job
 class YouTubeRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
     solo_piano: bool = False
+    piano_video: bool = False
 
 
 class SubmissionResponse(BaseModel):
