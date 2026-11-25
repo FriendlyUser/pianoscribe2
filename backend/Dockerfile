@@ -3,6 +3,7 @@
 #   api     - HTTP API and janitor (small, no models)
 #   worker  - ingestion, model environments, engraving (GPU strongly recommended)
 #   dev     - worker + test tooling (used by the `tests` compose service)
+#   video   - piano-tutorial videos only, on the processor: the CLI from a YouTube link or a file
 ARG PYTHON_VERSION=3.12
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS base
@@ -90,3 +91,64 @@ COPY tests ./tests
 COPY eval ./eval
 USER app
 CMD ["pytest"]
+
+# ------------------------------------------------------- video-models ----
+# Piano-tutorial videos only, on the processor. The notes are read from the picture, so the one
+# model environment needed is tsumugi-piano-cover's (beats, bar lines and key, and the score
+# writer), here without CUDA, with SheetSage2-Refined's weights at the revision the rest of the
+# app pins. The same setup as .github/workflows/piano-video.yml.
+FROM base AS video-models
+ARG COVER_REF=36f50c1d76ac36b11c7c9de701d231649ba17680
+ARG SHEETSAGE_REVISION=5e9c494941b8c0bb322d9f17f365a6f886d5e562
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+ENV UV_NO_CACHE=0 UV_CACHE_DIR=/tmp/uv-cache UV_LINK_MODE=copy UV_SYSTEM_PYTHON=0 UV_PYTHON_DOWNLOADS=never \
+    HF_HOME=/opt/hf HF_HUB_DISABLE_TELEMETRY=1
+WORKDIR /opt/models
+COPY requirements/cover-env-cpu.txt /tmp/cover-env-cpu.txt
+RUN git init -q tsumugi-piano-cover && cd tsumugi-piano-cover \
+ && git fetch -q --depth 1 https://github.com/anime-song/tsumugi-piano-cover.git ${COVER_REF} && git checkout -q FETCH_HEAD \
+ && rm -rf .git web docs notebooks \
+ && uv venv --python 3.12 .venv \
+ && uv pip install --python .venv/bin/python --extra-index-url https://download.pytorch.org/whl/cpu \
+      --index-strategy unsafe-best-match -r /tmp/cover-env-cpu.txt \
+ && rm -rf /tmp/uv-cache
+# Offline lookups of "main" resolve to the pinned revision.
+RUN tsumugi-piano-cover/.venv/bin/python -c "from pathlib import Path; \
+from sheetsage2_refined.pipeline import model_folder; \
+print(model_folder('anime-song/SheetSage2-Refined', '${SHEETSAGE_REVISION}')); \
+refs = Path('/opt/hf/hub/models--anime-song--SheetSage2-Refined/refs'); refs.mkdir(parents=True, exist_ok=True); \
+(refs / 'main').write_text('${SHEETSAGE_REVISION}')" \
+ && rm -rf /opt/hf/hub/.locks /opt/hf/xet
+
+# -------------------------------------------------------------- video ----
+# The CLI for piano-tutorial videos, from a YouTube link or a file; no queue, no GPU:
+#   docker build --target video -t pianoscribe-video backend
+#   docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/out:/out" pianoscribe-video \
+#     https://www.youtube.com/watch?v=VIDEO_ID /out
+# Where YouTube asks to sign in, add  -v "$PWD/cookies.txt:/cookies.txt:ro" -e PS_YOUTUBE_COOKIES_FILE=/cookies.txt
+# For a file, add  -v "$PWD/tutorial.mp4:/in/tutorial.mp4:ro"  and give /in/tutorial.mp4 instead of the link.
+FROM base AS video
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg libcairo2 fontconfig fonts-liberation2 util-linux fonts-noto-cjk \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=denoland/deno:bin-2.9.8 /deno /usr/local/bin/deno
+COPY requirements/worker.txt /tmp/requirements.txt
+RUN uv pip install --require-hashes -r /tmp/requirements.txt
+COPY --from=video-models /opt/models /opt/models
+COPY --from=video-models /opt/hf /opt/hf
+COPY app ./app
+COPY model_scripts ./model_scripts
+# Any user may run it (--user), so everything written goes to /tmp.
+ENV HOME=/tmp \
+    HF_HOME=/opt/hf \
+    HF_HUB_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    NUMBA_CACHE_DIR=/tmp/numba \
+    MPLCONFIGDIR=/tmp/matplotlib \
+    PS_DATA_DIR=/tmp/data \
+    PS_MODEL_DEVICE=cpu
+RUN HOME=/tmp/fonthome python -c "from app.engrave.pdf import install_music_font; install_music_font()" \
+ && mkdir -p /usr/local/share/fonts && cp /tmp/fonthome/.fonts/* /usr/local/share/fonts/ && fc-cache -f \
+ && fc-list | grep -qi leipzig && rm -rf /tmp/fonthome
+USER app
+ENTRYPOINT ["python", "-m", "app.cli", "transcribe", "--video"]

@@ -166,6 +166,15 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm -T \
   'python -m app.cli transcribe /in/fur_elise_opening.mp3 /tmp/out --solo >&2 && tar -C /tmp/out -cf - .' \
   | tar -xf - -C out
 
+# A piano tutorial video, from a YouTube link or a file, with no GPU: the image "video" holds
+# only what reading a video needs (the beat and key model runs on the processor).
+docker build --target video -t pianoscribe-video backend
+mkdir -p out
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/out:/out" pianoscribe-video \
+  https://www.youtube.com/watch?v=VIDEO_ID /out
+# Where YouTube asks to sign in: -v "$PWD/cookies.txt:/cookies.txt:ro" -e PS_YOUTUBE_COOKIES_FILE=/cookies.txt
+# A file instead of a link: -v "$PWD/tutorial.mp4:/in/tutorial.mp4:ro", and /in/tutorial.mp4 for the link.
+
 # HTTP API
 curl -X POST --data-binary @samples/fur_elise_opening.mp3 \
   "http://localhost:8080/api/jobs/upload?filename=fur_elise_opening.mp3&solo_piano=true"
