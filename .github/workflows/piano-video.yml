@@ -12,9 +12,11 @@
 # cookies.txt (Netscape format; a spare account is safest) into the repository secret
 # YOUTUBE_COOKIES gets past that.
 #
-# On pull requests that change the reader or the score writer, the same setup instead reads a
-# rendered video whose every note is known and checks the score against the piece
-# (backend/tests/grounded/test_piano_video.py).
+# On pull requests that change the reader or the score writer, and on pushes of such changes to
+# working branches (claude/**), the same setup instead reads a rendered video whose every note is
+# known and checks the score against the piece (backend/tests/grounded/test_piano_video.py). A
+# push also lets a branch's version of this workflow be run with a link before it is merged:
+#   gh workflow run piano-video.yml --ref BRANCH -f url=https://www.youtube.com/watch?v=...
 name: Piano tutorial video
 
 on:
@@ -29,6 +31,16 @@ on:
         required: false
         type: string
   pull_request:
+    paths:
+      - .github/workflows/piano-video.yml
+      - backend/app/visual/**
+      - backend/app/pipeline/**
+      - backend/app/ingest/youtube.py
+      - backend/model_scripts/exact_score.py
+      - backend/model_scripts/notate_exact.py
+      - backend/requirements/cover-env-cpu.txt
+  push:
+    branches: ["claude/**"]
     paths:
       - .github/workflows/piano-video.yml
       - backend/app/visual/**
@@ -126,7 +138,7 @@ jobs:
           echo "HF_HUB_OFFLINE=1" >> "$GITHUB_ENV"
 
       - name: Read a rendered video whose every note is known
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'workflow_dispatch'
         working-directory: backend
         run: python -m pytest -m grounded tests/grounded/test_piano_video.py -p no:cacheprovider
 
