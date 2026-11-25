@@ -45,6 +45,9 @@ class JobSource(BaseModel):
 
 class JobOptions(BaseModel):
     solo_piano: bool = False
+    # A piano-tutorial video (notes falling onto a keyboard): the notes are read from the picture.
+    # Left out of the record when off, so that the records and responses of other jobs are unchanged.
+    piano_video: bool = Field(default=False, exclude_if=lambda value: not value)
     # Model and arrangement settings chosen in the desktop app (see app.desktop.settings).
     # None on the web server, where the server's own configuration applies.
     models: dict[str, str | int | float] | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -52,6 +55,8 @@ class JobOptions(BaseModel):
     def cache_fragment(self) -> str:
         """Stable encoding of every option that changes the output."""
         fragment = f"solo={int(self.solo_piano)}"
+        if self.piano_video:
+            fragment += ";video=1"
         if self.models:
             fragment += ";" + ",".join(f"{k}={self.models[k]}" for k in sorted(self.models))
         return fragment
@@ -63,8 +68,27 @@ class JobErrorInfo(BaseModel):
     retryable: bool = False
 
 
+class VideoReading(BaseModel):
+    """What was read from the picture of a piano-tutorial video, and how it was checked."""
+
+    notes: int
+    right_hand: int
+    left_hand: int
+    # Notes whose key was seen lit while they sound; None when the video does not light its keys.
+    confirmed_by_keys: int | None = None
+    lowest_key: str  # of the keyboard shown, e.g. "A1"
+    highest_key: str
+    octave_from: str  # "full keyboard", "audio" or "middle of the keyboard"
+    hands_from: str  # "colours" or "pitch"
+    # Share (0..1) of the notes read that are in the score, and of the score's notes that were read.
+    score_kept: float | None = None
+    score_backed: float | None = None
+
+
 class JobResult(BaseModel):
-    mode: str  # "arrangement" (a song arranged for piano) or "transcription" (solo piano)
+    # "arrangement" (a song arranged for piano), "transcription" (solo piano, by ear) or
+    # "video" (a piano-tutorial video, read from the picture)
+    mode: str
     key: str
     key_changes: int = 0
     time_signature: str
@@ -76,6 +100,8 @@ class JobResult(BaseModel):
     duration_seconds: float
     # Share (0..1) of the detected melody that the arrangement plays in time; None for solo piano.
     melody_fidelity: float | None = None
+    # Piano-tutorial videos only.
+    video: VideoReading | None = Field(default=None, exclude_if=lambda value: value is None)
     artifacts: dict[str, int] = Field(default_factory=dict)  # name -> size in bytes
 
 

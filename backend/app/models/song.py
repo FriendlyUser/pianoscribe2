@@ -16,6 +16,10 @@ three model stages, each a subprocess in the model's own environment:
 A **solo piano** recording is not arranged, only transcribed: tsumugi's notes
 (with its velocity model), the beat grid of the recording, then the same
 notation stage.
+
+A **piano-tutorial video** needs no transcriber: its notes are read from the
+picture (``app.visual``). The beat grid and the key still come from the audio,
+and the notes are then written down by rule (``write_exact_score``).
 """
 
 from __future__ import annotations
@@ -216,6 +220,54 @@ def write_score(
         raise RuntimeError("the score model produced no MusicXML")
     partial.replace(out_xml)
     return out_xml
+
+
+def write_exact_score(
+    notes: Path,
+    annotation: Path,
+    out_xml: Path,
+    settings: Settings,
+    *,
+    title: str,
+    keys: Path | None = None,
+) -> dict[str, object]:
+    """Write notes read from a piano video (``app.visual``: visual.json) as MusicXML, by rule.
+
+    See ``model_scripts/notate_exact.py``: the notes are placed on the beat grid as they
+    were read; no network is run. Returns what the writer reports about its work.
+    """
+    facts: dict[str, object] = {}
+
+    def on_line(line: str) -> None:
+        if line.startswith("@@facts "):
+            facts.update(json.loads(line[len("@@facts ") :]))
+
+    partial = out_xml.with_suffix(".partial.musicxml")
+    tracked: list[str | Path] = ["--keys", keys] if keys else []
+    run_step(
+        "notate",
+        [
+            settings.cover_python,
+            settings.scripts_dir / "notate_exact.py",
+            "--notes",
+            notes,
+            "--annotation",
+            annotation,
+            "--out",
+            partial,
+            "--title",
+            title,
+            *tracked,
+        ],  # fmt: skip
+        cwd=settings.cover_dir,
+        timeout=settings.notate_timeout_seconds,
+        env={"PYTHONPATH": str(settings.cover_dir)},
+        on_line=on_line,
+    )
+    if not partial.is_file() or partial.stat().st_size == 0:
+        raise RuntimeError("the score writer produced no MusicXML")
+    partial.replace(out_xml)
+    return facts
 
 
 def link_or_copy(source: Path, target: Path) -> None:

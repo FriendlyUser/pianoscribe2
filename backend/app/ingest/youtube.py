@@ -178,6 +178,45 @@ def fetch_metadata(video_id: str, workdir: Path, settings: Settings) -> VideoMet
     return VideoMetadata(video_id=video_id, title=str(info.get("title") or video_id)[:200], duration=duration)
 
 
+def download_video(video_id: str, workdir: Path, settings: Settings) -> Path:
+    """Download the picture of ``video_id`` (video only, no sound) into ``workdir``.
+
+    For piano-tutorial videos, whose notes are read from the frames. The sound is fetched
+    separately by ``download_audio``; both start at the same instant of the video.
+    """
+    if not settings.youtube_enabled:
+        raise JobError("youtube_disabled", "YouTube links are disabled on this server. Upload a file instead.")
+    workdir.mkdir(parents=True, exist_ok=True)
+    for stale in workdir.glob("picture.*"):
+        stale.unlink()
+    height = settings.youtube_video_height
+    _with_retries(
+        "download-video",
+        [
+            *_base_args(settings),
+            "-f",
+            f"bv*[height<={height}][fps<=60]/bv*[height<={height}]/bv*/b",
+            "--max-filesize",
+            f"{settings.youtube_max_filesize_mb}M",
+            "--no-part",
+            "--no-mtime",
+            "-o",
+            "picture.%(ext)s",
+            "--",
+            canonical_url(video_id),
+        ],  # fmt: skip
+        workdir,
+        settings.youtube_timeout_seconds,
+        settings,
+    )
+    files = [p for p in workdir.glob("picture.*") if p.is_file() and p.stat().st_size > 0]
+    if not files:
+        raise JobError(
+            "youtube_failed", "YouTube did not return the picture of this video (it may exceed the size limit)."
+        )
+    return files[0]
+
+
 def download_audio(video_id: str, workdir: Path, settings: Settings) -> DownloadedAudio:
     """Download the best audio-only stream for ``video_id`` into ``workdir``."""
     if not settings.youtube_enabled:

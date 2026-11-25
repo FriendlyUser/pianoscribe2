@@ -1,6 +1,6 @@
 """Operator CLI.
 
-python -m app.cli transcribe INPUT OUTPUT_DIR [--solo] [--work DIR]   run the pipeline locally, no queue
+python -m app.cli transcribe INPUT OUTPUT_DIR [--solo | --video] [--work DIR]   run the pipeline locally, no queue
 python -m app.cli doctor                                              check the model environments and GPU
 python -m app.cli dead-letters                                        list dead-lettered jobs
 python -m app.cli requeue JOB_ID                                      retry a failed / dead-lettered job
@@ -33,7 +33,9 @@ def _transcribe(args: argparse.Namespace) -> int:
     try:
         settings: Settings = get_settings().model_copy(update={"data_dir": scratch})
         try:
-            finished = run_local(source, out, settings, solo=args.solo, title=args.title, on_update=print_progress())
+            finished = run_local(
+                source, out, settings, solo=args.solo, video=args.video, title=args.title, on_update=print_progress()
+            )
         except JobError as error:
             print(f"failed ({error.code}): {error.message}", file=sys.stderr)
             return 1
@@ -106,6 +108,11 @@ def main() -> int:
     transcribe.add_argument("output")
     transcribe.add_argument(
         "--solo", action="store_true", help="the recording is solo piano: transcribe, do not arrange"
+    )
+    transcribe.add_argument(
+        "--video",
+        action="store_true",
+        help="the input is a piano-tutorial video (notes falling onto a keyboard): read the notes from the picture",
     )
     transcribe.add_argument("--title")
     transcribe.add_argument("--work", help="keep work files here; after a failure, a rerun resumes from them")

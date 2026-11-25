@@ -15,6 +15,7 @@ export function SubmitForm({ config, onSubmitted }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [url, setUrl] = useState("");
   const [solo, setSolo] = useState(false);
+  const [video, setVideo] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState<number | null>(null);
@@ -59,9 +60,13 @@ export function SubmitForm({ config, onSubmitted }: Props) {
           setError("Choose a file to transcribe.");
           return;
         }
+        if (video && !/\.(mp4|mov)$/i.test(file.name)) {
+          setError("The piano-video option reads the picture: choose an MP4 or MOV video.");
+          return;
+        }
         setBusy(true);
         setUploading(0);
-        onSubmitted(await submitUpload(file, solo, setUploading));
+        onSubmitted(await submitUpload(file, { soloPiano: solo && !video, pianoVideo: video }, setUploading));
       } else {
         const parsed = parseYouTubeUrl(url);
         if (!parsed.ok) {
@@ -69,7 +74,7 @@ export function SubmitForm({ config, onSubmitted }: Props) {
           return;
         }
         setBusy(true);
-        onSubmitted(await submitYouTube(url.trim(), solo));
+        onSubmitted(await submitYouTube(url.trim(), { soloPiano: solo && !video, pianoVideo: video }));
       }
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Something went wrong. Please try again.");
@@ -144,7 +149,18 @@ export function SubmitForm({ config, onSubmitted }: Props) {
       )}
 
       <label className="toggle">
-        <input type="checkbox" checked={solo} onChange={(e) => setSolo(e.target.checked)} />
+        <input type="checkbox" checked={video} onChange={(e) => setVideo(e.target.checked)} />
+        <span>
+          <strong>This is a piano tutorial video</strong>
+          <span className="hint">
+            Notes fall onto a keyboard along the bottom of the picture. They are read from the picture itself: every
+            note, its length and the hand that plays it are written down as shown.
+          </span>
+        </span>
+      </label>
+
+      <label className="toggle">
+        <input type="checkbox" checked={solo && !video} disabled={video} onChange={(e) => setSolo(e.target.checked)} />
         <span>
           <strong>This is already solo piano</strong>
           <span className="hint">

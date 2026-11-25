@@ -18,14 +18,17 @@ memory/CPU/pid limits).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from app.config import Settings
 from app.logging import get_logger
@@ -187,3 +190,80 @@ def run_sandboxed(
         reason = "timed out" if timed_out else f"exited with status {result.returncode}"
         raise SandboxError(f"{Path(argv[0]).name} {reason}", result)
     return result
+
+
+@contextmanager
+def stream_sandboxed(
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    timeout: float,
+    limits: ResourceLimits,
+    env: dict[str, str] | None = None,
+) -> Iterator[BinaryIO]:
+    """Run ``argv`` under the sandbox policy and hand its standard output to the caller as a pipe.
+
+    For output too large to capture, such as decoded video frames. The caller reads the pipe to
+    its end inside the ``with`` block; leaving the block early kills the tool. Raises
+    ``SandboxError`` on leaving the block if the tool timed out or exited with an error.
+    """
+    cwd.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    stderr_path = cwd / f".sandbox-{os.getpid()}-{time.monotonic_ns()}.err"
+    process_options: dict[str, Any] = {**group_kwargs(), **({} if WINDOWS else {"umask": 0o077})}
+    timed_out = threading.Event()
+    completed = False
+    exited_by_itself = False
+    with stderr_path.open("wb") as err:
+        process = subprocess.Popen(  # argv is built by the caller, never a shell string
+            [*_launcher(limits), *argv],
+            cwd=str(cwd),
+            env=_minimal_env(env, cwd),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=err,
+            close_fds=True,
+            **process_options,
+        )
+
+        def expire() -> None:
+            timed_out.set()
+            kill_tree(process)
+
+        watchdog = threading.Timer(timeout, expire)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            assert process.stdout is not None
+            yield process.stdout
+            completed = True
+        finally:
+            if completed:
+                # The caller has read to the end; give the tool a moment to exit by itself.
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=10)
+            watchdog.cancel()
+            exited_by_itself = process.poll() is not None
+            kill_tree(process)
+            process.wait()
+            if process.stdout is not None:
+                process.stdout.close()
+            stderr = stderr_path.read_bytes()[:_OUTPUT_LIMIT].decode("utf-8", "replace")
+            stderr_path.unlink(missing_ok=True)
+    result = SandboxResult(
+        returncode=process.returncode,
+        stdout="",
+        stderr=stderr,
+        seconds=round(time.perf_counter() - started, 3),
+        timed_out=timed_out.is_set(),
+    )
+    log.debug(
+        "sandbox.exit",
+        tool=Path(argv[0]).name,
+        returncode=result.returncode,
+        seconds=result.seconds,
+        timed_out=result.timed_out,
+    )
+    if result.timed_out or not exited_by_itself or result.returncode != 0:
+        reason = "timed out" if result.timed_out else f"exited with status {result.returncode}"
+        raise SandboxError(f"{Path(argv[0]).name} {reason}", result)

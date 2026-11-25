@@ -113,6 +113,21 @@ class Settings(BaseSettings):
     # size. On long solo pieces the score model starts to write notes twice (0 disables).
     solo_section_bars: int = 64
 
+    # --- piano tutorial videos (app.visual) ------------------------------
+    # The falling notes are read from the picture, at most this wide and at most this many
+    # frames a second. Narrower than about 1280 the bars of black keys get hard to tell apart.
+    visual_max_width: int = 1920
+    visual_max_fps: int = 60
+    # Whole frames sampled across the video to find the keyboard.
+    visual_sample_frames: int = 48
+    # Wall-clock limit for decoding every frame of the video.
+    visual_timeout_seconds: int = 1200
+    # exact: the notes read from a video are written down by rule, as read (model_scripts/exact_score.py).
+    # model: they are given to the score model, as a transcription by ear is.
+    video_score_writer: Literal["exact", "model"] = "exact"
+    # Largest picture fetched for a YouTube piano video.
+    youtube_video_height: int = 1080
+
     page_size: Literal["A4", "Letter"] = "A4"
     # cairo: the worker writes score.pdf. none: no server-side PDF; a desktop shell prints
     # the score page with its own browser engine instead.

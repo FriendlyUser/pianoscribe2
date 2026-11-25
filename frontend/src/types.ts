@@ -24,9 +24,30 @@ export interface JobError {
   retryable: boolean;
 }
 
+/** What was read from the picture of a piano-tutorial video, and how it was checked. */
+export interface VideoReading {
+  notes: number;
+  right_hand: number;
+  left_hand: number;
+  /** Notes whose key was seen lit while they sound; null when the video does not light its keys. */
+  confirmed_by_keys: number | null;
+  lowest_key: string;
+  highest_key: string;
+  /** "full keyboard", "audio" or "middle of the keyboard". */
+  octave_from: string;
+  /** "colours": the video draws each hand in its own colour. "pitch": it does not; split at middle C. */
+  hands_from: string;
+  /** Share (0..1) of the notes read that are in the score, and of the score's notes that were read. */
+  score_kept: number | null;
+  score_backed: number | null;
+}
+
 export interface JobResult {
-  /** "arrangement": a song arranged for piano. "transcription": a solo piano recording written down. */
-  mode: "arrangement" | "transcription";
+  /**
+   * "arrangement": a song arranged for piano. "transcription": a solo piano recording written down.
+   * "video": a piano-tutorial video, its notes read from the picture.
+   */
+  mode: "arrangement" | "transcription" | "video";
   key: string;
   key_changes: number;
   time_signature: string;
@@ -39,6 +60,8 @@ export interface JobResult {
   duration_seconds: number;
   /** Share (0..1) of the detected melody that the arrangement plays in time; null for solo piano. */
   melody_fidelity: number | null;
+  /** Piano-tutorial videos only. */
+  video?: VideoReading | null;
   artifacts: Record<string, number>;
 }
 
@@ -50,7 +73,7 @@ export interface Job {
   message: string;
   title: string;
   source: JobSource;
-  options: { solo_piano: boolean };
+  options: { solo_piano: boolean; piano_video?: boolean };
   error: JobError | null;
   result: JobResult | null;
   attempts: number;

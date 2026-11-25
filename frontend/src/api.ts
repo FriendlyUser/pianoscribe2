@@ -33,23 +33,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const getConfig = () => request<ClientConfig>("/api/config");
 export const getJob = (id: string) => request<Job>(`/api/jobs/${id}`);
 
-export const submitYouTube = (url: string, soloPiano: boolean) =>
+/** How a recording is to be read: by ear (a song, or solo piano), or from the picture of a piano video. */
+export interface SubmitOptions {
+  soloPiano: boolean;
+  pianoVideo: boolean;
+}
+
+export const submitYouTube = (url: string, options: SubmitOptions) =>
   request<Submission>("/api/jobs/youtube", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url, solo_piano: soloPiano }),
+    body: JSON.stringify({ url, solo_piano: options.soloPiano, piano_video: options.pianoVideo }),
   });
 
 /** Upload a file as the raw request body, reporting upload progress (0..1). */
 export function submitUpload(
   file: File,
-  soloPiano: boolean,
+  options: SubmitOptions,
   onProgress: (fraction: number) => void,
   signal?: AbortSignal,
 ): Promise<Submission> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const query = new URLSearchParams({ filename: file.name, solo_piano: String(soloPiano) });
+    const query = new URLSearchParams({
+      filename: file.name,
+      solo_piano: String(options.soloPiano),
+      piano_video: String(options.pianoVideo),
+    });
     xhr.open("POST", `/api/jobs/upload?${query.toString()}`);
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     xhr.responseType = "json";

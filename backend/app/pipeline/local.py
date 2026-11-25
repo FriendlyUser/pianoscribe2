@@ -51,6 +51,7 @@ def run_local(
     settings: Settings,
     *,
     solo: bool = False,
+    video: bool = False,
     title: str | None = None,
     on_update: Callable[[Job], None] | None = None,
 ) -> Job:
@@ -68,7 +69,7 @@ def run_local(
     sha = digest.hexdigest()
     kind = sniff(head)
     extension = source.suffix.lower().lstrip(".")
-    options = JobOptions(solo_piano=solo)
+    options = JobOptions(solo_piano=solo, piano_video=video)
     for path in (settings.uploads_dir, settings.work_dir, settings.artifacts_dir):
         path.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, settings.uploads_dir / f"{sha}.{extension}")

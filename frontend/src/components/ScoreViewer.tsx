@@ -57,8 +57,31 @@ export function ScoreViewer({ job, cached, shellPdf = false }: Props) {
               <li title="The whole song (melody, bass, harmony) rewritten as a part one pianist can play.">
                 Arranged for piano
               </li>
+            ) : result.mode === "video" ? (
+              <li title="The notes shown in the video, read from the picture and written down as shown.">
+                Read from the video
+              </li>
             ) : (
               <li title="The notes the pianist played, written down.">Piano transcription</li>
+            )}
+            {result.video && (
+              <li
+                title={
+                  `Keyboard shown: ${result.video.lowest_key} to ${result.video.highest_key}. ` +
+                  `Right hand ${result.video.right_hand} notes, left hand ${result.video.left_hand}` +
+                  (result.video.hands_from === "pitch" ? " (the video uses one colour: split at middle C)." : ".")
+                }
+              >
+                {result.video.notes} notes read
+                {result.video.confirmed_by_keys !== null &&
+                  `, ${result.video.confirmed_by_keys} confirmed by the keys lighting up`}
+              </li>
+            )}
+            {result.video && result.video.score_kept !== null && result.video.score_backed !== null && (
+              <li title="Share of the notes read from the video that are in the score, and of the score's notes that were read from the video.">
+                {Math.floor(result.video.score_kept * 100)}% in the score, {Math.floor(result.video.score_backed * 100)}%
+                of the score from the video
+              </li>
             )}
             {result.melody_fidelity !== null && (
               <li title="Share of the melody notes heard in the recording that the arrangement plays at the same moment.">
