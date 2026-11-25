@@ -53,7 +53,7 @@ flowchart LR
     K --- M[(model-cache volume)]
 ```
 
-## The two paths
+## The three paths
 
 ```
 song (band, vocals, orchestra, soundtrack)
@@ -65,6 +65,11 @@ solo piano
   audio.wav ─► performance.mid ─► annotation.json ─► score.musicxml ─► PDF / HTML / MIDI
               the notes played,    beats, bars,
               with dynamics        meter
+
+piano tutorial video (notes falling onto a keyboard)
+  video ─► visual.json + performance.mid ─► annotation.json ─► score.musicxml ─► PDF / HTML / MIDI
+           the notes shown: key, onset,     beats, bars,        written by rule,
+           length, hand (no model)          meter, key (audio)  as read
 ```
 
 **Song.** `tsumugi` separates the recording into stems and transcribes each one, giving a
@@ -78,9 +83,71 @@ a pianist can play, not a record of any one instrument. The cover is sampled wit
 transcribes the recording restricted to the piano label, its velocity model adds dynamics, and
 `SheetSage2-Refined` supplies the beat grid. The notes in the score are the notes that were played.
 
-Both paths end in the same notation stage, `piano_perf2score`, which reads a performance against
-a beat grid and writes notation: note values, ties, voices, the split between hands, key
-signatures and clefs.
+The first two paths end in the same notation stage, `piano_perf2score`, which reads a
+performance against a beat grid and writes notation: note values, ties, voices, the split between
+hands, key signatures and clefs.
+
+**Piano tutorial video** (the "This is a piano tutorial video" option). The notes are not heard
+but read from the picture, and not notated by a model but written down by rule. Both follow from
+what such a video is: a piano roll drawn to the pixel, with each hand in its own colour. See the
+next section.
+
+### Reading a piano tutorial video
+
+`app/visual/` measures; it runs no model.
+
+1. **Keyboard** (`keyboard.py`). A few dozen frames are sampled and their median taken, which
+   removes falling notes and lit keys. The band of black keys has a row pattern nothing else in a
+   frame has; the lines between white keys lie on a lattice; black keys sit on five of every seven
+   boundaries, a pattern with no symmetry, which names every key. Note names printed on the keys
+   do not disturb this.
+2. **Roll** (`roll.py`). The notes scroll down at the speed of the music, so the video is a piano
+   roll seen through a moving window. Every frame contributes a thin strip a little above the
+   keyboard (above the flare drawn where notes land), and the strips are laid end to end by how
+   far each still has to travel. One row of the rebuilt roll is one pixel of travel: 4 ms in a
+   1080p video. A screen recording repeats and skips frames, so how far the picture really moved
+   between two frames is measured rather than assumed (one of the two development videos moves
+   0, 3, 9, 6, 1 ... rows from frame to frame).
+3. **Bars.** Each key is read in the columns no other key's bar can cover; a black key's bar lies
+   over the edges of two white keys and is read in two parts. A bar is there wherever its key's
+   columns are not background. Two bars that touch (a quarter of all notes in the first
+   development video) are told apart by the notch their rounded corners leave at the sides,
+   which the note name printed inside a bar never reaches.
+4. **Hands** (`hands.py`) from the colour of the bars, compared on hue so that the darker shade
+   used for black keys stays with its hand. A video in one colour is split at middle C.
+5. **Checks** (`reader.py`, `audio.py`), reported with every result:
+   - *the keys*: the video lights each key while its note sounds, a second reading of the same
+     notes from another part of the picture. Every bar is compared with it, and it fixes the
+     moment a bar counts as struck;
+   - *the audio*: the notes are laid over the spectrum of the recording at each candidate octave.
+     A keyboard that is not a full 88 keys looks the same an octave up; the true octave is where
+     the notes' fundamentals and overtones meet the sound. Onsets are then timed against the
+     attacks heard, so that the notes sit on the beats the beat tracker hears;
+   - *the score*: the notes of the engraved score against the notes read (`check.py`).
+
+**Writing the notes down** (`model_scripts/exact_score.py`). The score model is not used here. It
+writes fluent notation, but it decides for itself what was played: given the exact notes of the
+first development video it wrote 936 notes for 929, put three on the wrong staff and wrote the
+opening triplet figure as sixteenths. With exact input there is nothing to decide, so the notes
+are placed by rule:
+
+| Step | Rule |
+|---|---|
+| Beats | A tracked beat is some milliseconds off; the notes are not. Each beat with a note on it moves onto that note (`snap_beats`). After this, all but 5 of 929 notes lie within 0.045 beat of a grid point. |
+| Positions | Within a beat, the notes of a hand lie on the simplest grid that fits: halves, quarters, thirds or sixths of the beat (`quantize_onsets`). |
+| Voices | Notes of one hand struck and held together are a chord; a note held while others move is a second voice (`plan_voices`). |
+| Note values | A bar in the video is shorter than the note it stands for, since keys are released before the next note. A note lasts to the next note of its voice unless a real rest follows (`settle_lengths`). |
+| Ties | A note is cut at bar lines, and inside a bar wherever it would hide a beat stronger than the one it starts on (`split_value`). |
+
+Rests, beams, tuplet brackets, accidentals, clefs and the tempo marking are then the model
+repository's own engraving rules (`notate_exact.py`). What still comes from the audio models is
+only what the picture cannot show: where the beats are and how they group into bars
+(SheetSage2-Refined), and the key (its key tracker). `PS_VIDEO_SCORE_WRITER=model` sends the
+notes to the score model instead.
+
+Because no transcriber and no score model run, this path needs no GPU in practice: on four CPU
+cores, a 4.4-minute 1080p60 video takes about four minutes (two to read the frames, one each for
+beats and key).
 
 ### What this project adds around the models
 
@@ -292,9 +359,32 @@ with its outcome; per-stage timings are stored on the job record and returned by
 - No fingering, and articulation is limited to what the score model writes (slurs, pedal,
   dynamics, hairpins).
 
+- **Piano tutorial videos.** A reading is exact where the picture has the detail, and less so
+  where it has not:
+  - Two notes that touch are separated by the corners of their bars. With a white key narrower
+    than about 40 pixels (61 keys shown at 720p) the corners are a pixel or two, and the dark
+    line between the bars is read instead, less reliably: the first development video, read at
+    720p instead of 1080p, comes out with 5 notes merged and 5 split in 929. A note name printed
+    across a narrow black-key bar can read as such a line. Both limits are pinned by
+    expected-failure tests. YouTube videos are fetched at up to 1080p for this reason.
+  - Real videos have no reference score. The checks made on every reading (keys, audio, score)
+    show that the notes read are the notes shown; they cannot show it note by note for the
+    lengths, and a renderer that does not light its keys leaves only the audio.
+  - Bar lines, meter, tempo and key are still heard, not read: the limits above for the beat
+    model and the key tracker apply (the first development video has one 3/4 bar among 4/4
+    that may not be the arranger's).
+  - The video must be of the usual kind: a keyboard along the bottom, bars falling onto it. A
+    camera on a real piano, a keyboard that moves or zooms, and notes that rise are not read.
+  - Written by rule, the score has no dynamics, pedal or articulation, at most two voices per
+    hand (a third is cut short where it would begin; the count is reported), nothing shorter
+    than a sixth of a beat, and more ties than an engraver would use.
+  - A video that draws both hands in one colour is split at middle C.
+  - The YouTube route for videos (`download_video`) could not be run where this was built, and
+    the web form's new option was type-checked but not exercised in a browser.
+
 **System**
 
-- A GPU is needed in practice. On an RTX 4060 (8 GB) a 4.4-minute song takes six to nine minutes
+- A GPU is needed in practice for songs and for transcription by ear. On an RTX 4060 (8 GB) a 4.4-minute song takes six to nine minutes
   and a 30-second piano clip a minute and a half; CPU-only runs are untested beyond start-up and
   will be many times slower.
 - The worker image is large (about 11 GB: two PyTorch environments) and the weights add 4.5 GB.

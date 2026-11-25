@@ -62,7 +62,9 @@ def _distance(a: float, b: float) -> float:
     return abs((a - b + 180.0) % 360.0 - 180.0)
 
 
-def assign_hands(colours: Sequence[tuple[float, float, float]], pitches: Sequence[int], black: Sequence[bool]) -> list[str]:
+def assign_hands(
+    colours: Sequence[tuple[float, float, float]], pitches: Sequence[int], black: Sequence[bool]
+) -> list[str]:
     """``right`` / ``left`` for each note, or ``unknown`` for all when the video uses one colour."""
     count = len(colours)
     if count == 0:

@@ -73,8 +73,8 @@ def audio_offset(
     lags = np.arange(-int(search * per_second), int(search * per_second) + 1)
     positions = np.asarray(onsets, dtype=np.float64) * per_second
     scores = np.empty(len(lags))
-    for i, lag in enumerate(lags):
-        where = positions + lag
+    for i, shift in enumerate(lags):
+        where = positions + shift
         scores[i] = np.interp(where, np.arange(len(strength)), strength, left=0.0, right=0.0).sum()
     best = int(np.argmax(scores))
     lag = float(lags[best])
@@ -107,9 +107,7 @@ def pitch_spectrum(audio: NDArray[np.float32], rate: int, *, size: int = 8192, h
     return bands, rate / hop
 
 
-def octave_scores(
-    notes: Sequence[tuple[float, float, int]], audio: NDArray[np.float32], rate: int
-) -> dict[int, float]:
+def octave_scores(notes: Sequence[tuple[float, float, int]], audio: NDArray[np.float32], rate: int) -> dict[int, float]:
     """Agreement (0..1) of ``notes`` (start, end, pitch) with the audio, moved by each candidate octave."""
     bands, per_second = pitch_spectrum(audio, rate)
     heard = np.sqrt(bands)

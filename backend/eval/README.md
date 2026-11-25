@@ -6,6 +6,7 @@ output. There are three kinds of ground truth, from strictest to most musical:
 | Ground truth | What it checks | Where |
 |---|---|---|
 | **Synthesized piano** with every note known | notes, key, meter, tempo, bar count, hands | `tests/synth.py`, always available |
+| **Rendered piano video** of the same notes | the picture reader: key, onset, length and hand of every note | `tests/piano_video.py`, always available |
 | **Disklavier MIDI** recorded with the audio (MAESTRO v3) | note onsets and lengths of the piano transcriber | `eval/data/maestro/` (downloaded) |
 | **A printed score** of the piece | melody, rhythm, bar lines, bass, key, meter of the written score | `eval/references/*.json`, `eval/private/*.json` |
 
@@ -58,6 +59,43 @@ with 39% more notes than were played, because the score model degrades on long s
 solo pieces are now written in sections. And Japanese titles were blank in the PDF for want of a
 font. For scale on the harmony column: the benchmark arrangement that scores 0.87 against its
 human reference gives 0.72 here, and the Für Elise clip 0.84.
+
+## Piano tutorial videos
+
+The reader (`app/visual`) is tested against videos rendered from known notes
+(`tests/piano_video.py`): a keyboard, falling bars with rounded corners and dark outlines, a note
+name printed on each bar, a flare where notes land, lit keys, a title card and a fade, encoded
+with H.264. `tests/unit/test_visual_reader.py` asserts the notes that come out against the notes
+that went in, and `tests/grounded/test_piano_video.py` holds the finished score to the piece.
+
+| | Result |
+|---|---|
+| Reader alone, "Ode to Joy" at 720p (62 notes) | 62 read, every key and hand right; onset error -1.9 ms on average, 6.8 ms at most; end error 10.6 ms at most |
+| Whole pipeline on that video, score against the piece | overall 1.00 (melody, rhythm, bar placement, bass, key, meter); each hand on its own staff; 8 bars; quarter = 112 |
+
+Two real videos were used in development. Neither has a reference score, so these are
+cross-checks, not accuracy figures. Their outputs are not in the repository: both are other
+people's arrangements of copyrighted songs.
+
+| | Rendered tutorial, 1080p60, 4:21 | Synthesia screen recording, 720p30, 4:16 |
+|---|---|---|
+| Keyboard read | A1 to A6 (61 keys); the "C4" printed on the keyboard is where middle C was put | A1 to B5 (51 keys), note names printed on every key |
+| Notes read | 929 (right hand 622, left 307) | 1407 (right hand 539, left 868) |
+| Separated from a touching note | 148 | 34 |
+| Bars whose key was seen lit | 929 of 929 | 1403 of 1407 |
+| Keys lit with no bar | 0 | 0 |
+| Octave, by agreement with the audio | as placed: 0.70, against 0.44 an octave down and 0.38 up | as placed: 0.56, against 0.44 and 0.35 |
+| Strong attacks in the audio with no note onset within 60 ms | 0 of 507 | 51 of 491 |
+| Frame-to-frame motion | even | uneven (0 to 10 rows a frame): followed frame by frame |
+| Score | E major, 4/4, quarter = 105; every note read is in it and nothing else; every note on its hand's staff | F major, 4/4, quarter = 100, the tempo the recording itself displays; every note read is in it and nothing else |
+| The same notes through the score model instead | 936 notes written for 929, three on the wrong staff, the opening triplets written as sixteenths | not run |
+
+What this does and does not establish. For the first video every check agrees, and one more that
+only it allows: each bar carries exactly one printed note name. For the second, the keys agree
+but a tenth of the strong attacks in its audio have no note beside them; whether those are notes
+the reader missed or something in that recording's sound was not resolved. The first video read
+again at 720p gives 929 notes of which 5 are split and 5 merged against the 1080p reading (see
+the limits pinned in `tests/unit/test_visual_reader.py`).
 
 ## Score references
 

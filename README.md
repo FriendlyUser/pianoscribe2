@@ -6,9 +6,11 @@ Upload an audio/video file (MP3, WAV, MP4, MOV) or paste a YouTube link:
 
 - a **song** (band, vocals, orchestra, game soundtrack) is *arranged* for piano: its melody, bass
   and harmony rewritten as a part two hands can play;
-- a **solo piano** recording is *transcribed*: the notes that were played, written down.
+- a **solo piano** recording is *transcribed*: the notes that were played, written down;
+- a **piano tutorial video** (notes falling onto a keyboard, "Synthesia style") is *read*: every
+  note, its length and the hand that plays it are measured in the picture and written down as shown.
 
-Either way you get an engraved two-staff score to play back in the browser, print, or download as
+Each way you get an engraved two-staff score to play back in the browser, print, or download as
 PDF, standalone HTML, MusicXML and MIDI.
 
 This is a ground-up rebuild of [PianoScribe](https://github.com/FriendlyUser/pianoscribe). The
@@ -43,6 +45,21 @@ YouTube link scored 0.85:
 | MAESTRO v3 test recordings (Disklavier MIDI), six pieces | note onset F1 0.978 (onset and length: 0.874) |
 | Synthesized piece with every note known | all notes, key, meter, tempo and bar count exact |
 | Für Elise, 32-second recording against the printed score (bars 1-9) | overall 0.95: the melody, rhythm, bar lines, bass and key signature correct; written in 3/4 with doubled note values instead of 3/8 |
+
+**Reading a piano tutorial video.** The notes are measured in the frames, not heard, and written
+down by rule, so the score is held to a stricter standard: the notes shown, all of them, no others.
+
+| Ground truth | Result |
+|---|---|
+| Rendered video of a piece with every note known (720p, H.264), reader alone | 62 of 62 notes, each with the right key and hand; onsets within 7 ms, ends within 11 ms |
+| The same video through the whole pipeline, against the piece | overall 1.00: every note in its bar, at its beat, with its length, on the staff of its hand; key, meter and tempo exact |
+
+Real videos have no reference score, so each reading is cross-checked three ways instead (the
+keys lighting up, the attacks in the audio, the pitch of the audio); the two videos the reader was
+developed on, and what those checks can and cannot show, are in
+[backend/eval/README.md](backend/eval/README.md#piano-tutorial-videos). In short: a 1080p video
+read to 929 notes with every check passing; lower resolutions and screen recordings read with a
+few notes in a hundred in doubt. See also [Known limitations](ARCHITECTURE.md#known-limitations).
 
 A field test on four more recordings from anime and visual novels (two songs, two piano solos)
 had key, meter and tempo right on all four; the method and numbers are in
@@ -123,7 +140,9 @@ To check any finished job against its recording, without a reference score:
 docker compose --profile test run --rm -v "$PWD/my-job:/job:ro" tests python -m eval.field_check /job/recording.wav /job
 ```
 
-The grounded suite always runs the synthesized-piano and Für Elise tests. Two more need material
+The unit tests include the piano-video reader against rendered videos whose notes are known
+(they need ffmpeg, which the tests image has). The grounded suite always runs the
+synthesized-piano, piano-video and Für Elise tests. Two more need material
 that is not in the repository and are skipped without it:
 
 ```bash
@@ -138,7 +157,8 @@ published arrangement of a copyrighted work, so it is not committed.
 ## Using it without the web UI
 
 ```bash
-# A local file straight to ./out (no queue, no Redis). Add --solo for solo piano.
+# A local file straight to ./out (no queue, no Redis). Add --solo for solo piano, or
+# --video for a piano tutorial video (an MP4 or MOV whose picture is to be read).
 mkdir -p out
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm -T \
   -v "$PWD/samples:/in:ro" worker sh -c \
@@ -151,6 +171,8 @@ curl -X POST --data-binary @samples/fur_elise_opening.mp3 \
 curl -X POST -H 'Content-Type: application/json' \
   -d '{"url": "https://www.youtube.com/watch?v=VIDEO_ID", "solo_piano": false}' \
   http://localhost:8080/api/jobs/youtube
+curl -X POST --data-binary @tutorial.mp4 \
+  "http://localhost:8080/api/jobs/upload?filename=tutorial.mp4&piano_video=true"
 curl -N http://localhost:8080/api/jobs/JOB_ID/events          # live progress (Server-Sent Events)
 curl -O "http://localhost:8080/api/jobs/JOB_ID/artifacts/score.pdf?download=true"
 ```
@@ -176,6 +198,8 @@ Environment variables with the `PS_` prefix; copy `.env.example` to `.env`. The 
 | `PS_COVER_DENSITY` | `1.0` | Note density of arrangements |
 | `PS_COVER_SEED` | `0` | Arrangements are sampled; a fixed seed makes them repeatable |
 | `PS_COVER_OPENING_RETRIES` | `2` | Times an arrangement is generated again when its opening does not play the detected melody |
+| `PS_VIDEO_SCORE_WRITER` | `exact` | Piano videos: `exact` writes the notes read down by rule; `model` hands them to the score model |
+| `PS_YOUTUBE_VIDEO_HEIGHT` | `1080` | Largest picture fetched for a YouTube piano video (touching notes need the detail) |
 | `PS_PAGE_SIZE` | `A4` | `A4` or `Letter` |
 
 The full list is in [backend/app/config.py](backend/app/config.py).
@@ -198,10 +222,12 @@ backend/
     ingest/     magic-byte checks, streamed uploads, sandboxed ffmpeg and yt-dlp
     jobs/       job model, dedupe keys, Redis store, Dramatiq queue, idempotent runner
     models/     model stages as subprocesses: transcription, arrangement, notation
+    visual/     piano tutorial videos: keyboard, falling notes, hands, checks (no model)
     engrave/    Verovio rendering, PDF, standalone HTML, score summary
     pipeline/   stage orchestration with checkpoints and timings
     storage/    artifact store, retention janitor
-  model_scripts/  drivers that run inside the model environments, and the score fixes
+  model_scripts/  drivers that run inside the model environments, the score fixes, and the
+                  rule-based writer for notes read from a video
   eval/         grounded evaluation: metrics, references, data fetchers
   tests/        unit/ and grounded/
   requirements/ *.in sources, hash-pinned *.txt locks, the cover model's environment

@@ -28,7 +28,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import IO, Any
 
 from app.config import Settings
 from app.logging import get_logger
@@ -200,7 +200,7 @@ def stream_sandboxed(
     timeout: float,
     limits: ResourceLimits,
     env: dict[str, str] | None = None,
-) -> Iterator[BinaryIO]:
+) -> Iterator[IO[bytes]]:
     """Run ``argv`` under the sandbox policy and hand its standard output to the caller as a pipe.
 
     For output too large to capture, such as decoded video frames. The caller reads the pipe to

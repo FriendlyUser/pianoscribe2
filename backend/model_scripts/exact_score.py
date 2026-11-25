@@ -182,7 +182,7 @@ def layout_bars(annotation: dict, beats: list[float], first_tick: int, last_tick
     count, unit = lines[-1][1], lines[-1][2]
     while bars[-1].start + bars[-1].ticks < last_tick:
         bars.append(bar((bars[-1].start + bars[-1].ticks) // TICKS, count, unit))
-    bars = [b for b in bars if b.start + b.ticks > first_tick]
+    bars = [b for b in bars if b.start + b.ticks > first_tick and b.start < last_tick]  # only bars with music in them
     if not bars:
         raise ValueError("no bars cover the notes")
     first = bars[0]
@@ -300,7 +300,13 @@ def settle_lengths(voice: list[Chord], triple_beats: set[int]) -> None:
             if not _may_end(end, triple_beats) or not 0.6 <= held / length <= 1.1:
                 continue
             plain = (
-                0.0 if length % TICKS == 0 else 0.02 if length % 6 == 0 else 0.06 if length % 3 == 0 or length % 4 == 0 else 0.15
+                0.0
+                if length % TICKS == 0
+                else 0.02
+                if length % 6 == 0
+                else 0.06
+                if length % 3 == 0 or length % 4 == 0
+                else 0.15
             )
             cost = abs(held / length - 0.95) + plain
             if best is None or cost < best_cost:
@@ -457,7 +463,10 @@ def plan_score(notes: list[dict], annotation: dict) -> Plan:
         starts = quantize_onsets(positions)
         off_grid += sum(abs(p * TICKS - t) > FIT * TICKS for p, t in zip(positions, starts, strict=True))
         triple[staff] = {t // TICKS for t in starts if t % 3 != 0}
-        ends = [max(s + 1, round(beat_position(float(n["end"]), beats) * TICKS)) for n, s in zip(members, starts, strict=True)]
+        ends = [
+            max(s + 1, round(beat_position(float(n["end"]), beats) * TICKS))
+            for n, s in zip(members, starts, strict=True)
+        ]
         ticked[staff] = [(s, e, int(n["pitch"])) for s, e, n in zip(starts, ends, members, strict=True)]
     every = [item for members in ticked.values() for item in members]
     if not every:

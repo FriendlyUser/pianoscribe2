@@ -82,13 +82,19 @@ def main() -> None:
                 staff=value.staff,
                 voice=value.voice,
                 duration=Duration(value.kind, value.dots, (3, 2) if value.triplet else None),
-                notes=[Note(pitch, spell_pitch_class(pitch % 12, measure.key), tie=value.tied) for pitch in value.pitches],
+                notes=[
+                    Note(pitch, spell_pitch_class(pitch % 12, measure.key), tie=value.tied) for pitch in value.pitches
+                ],
             )
         )
     chromatic_spelling(measures)
     readable_staves(measures)
     last = plan.bars[-1]
-    end = last.seconds + (starts[-1] - starts[-2]) * last.ticks / plan.bars[-2].ticks if len(starts) > 1 else last.seconds + 2.0
+    end = (
+        last.seconds + (starts[-1] - starts[-2]) * last.ticks / plan.bars[-2].ticks
+        if len(starts) > 1
+        else last.seconds + 2.0
+    )
     apply_bar_tempos(measures, SimpleNamespace(bar_seconds=np.array([*starts, end])), 0)
     write_musicxml(measures, Path(args.out), title=args.title)
     facts = {

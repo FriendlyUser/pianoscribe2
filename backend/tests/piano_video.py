@@ -128,7 +128,7 @@ def _roll(notes: list[VideoNote], style: Style, layout: _Layout, speed: float, s
         high = height - 1 - note.end * speed
         fill = _colour(note, style)
         outline = tuple(int(0.22 * c) for c in fill)
-        box = [round(x0), round(high), round(x1) - 1, round(low)]
+        box = [round(x0), round(high) + 1, round(x1) - 1, round(low)]  # up to, not onto, the next bar
         if box[3] - box[1] < 2:
             continue
         r = min(radius, (box[3] - box[1]) // 2, (box[2] - box[0]) // 2)
@@ -162,7 +162,12 @@ def _keyboard(style: Style, layout: _Layout, lit: dict[int, tuple[int, int, int]
 
 
 def render(
-    notes: list[VideoNote], path: Path, style: Style = Style(), *, audio: bool = True, tail: float = 1.0  # noqa: B008
+    notes: list[VideoNote],
+    path: Path,
+    style: Style = Style(),
+    *,
+    audio: bool = True,
+    tail: float = 1.0,  # noqa: B008
 ) -> Path:
     """Write ``notes`` as a tutorial video (with their sound, unless ``audio`` is False). Returns ``path``.
 
@@ -190,7 +195,9 @@ def render(
     assert encoder.stdin is not None
     card = Image.new("RGB", (style.width, style.height), (8, 8, 8))
     ImageDraw.Draw(card).rectangle([0, 0, style.width, style.height // 4], fill=(240, 220, 180))
-    ImageDraw.Draw(card).text((style.width // 3, style.height // 2), "SPECIAL THANKS", font=_font(40), fill=(110, 220, 240))
+    ImageDraw.Draw(card).text(
+        (style.width // 3, style.height // 2), "SPECIAL THANKS", font=_font(40), fill=(110, 220, 240)
+    )
     for _ in range(title_frames):
         encoder.stdin.write(card.tobytes())
     for index in range(frames):
@@ -237,7 +244,9 @@ def _sound(notes: list[VideoNote], path: Path, before: float, seconds: float) ->
     synth.write_wav(path, (audio / peak * 0.8).astype(np.float32), rate)
 
 
-def from_beats(notes: list[synth.SynthNote], bpm: float, *, right_velocity: int = 92, gate: float = 0.9) -> list[VideoNote]:
+def from_beats(
+    notes: list[synth.SynthNote], bpm: float, *, right_velocity: int = 92, gate: float = 0.9
+) -> list[VideoNote]:
     """``tests.synth`` notes (in beats) as video notes; the melody's velocity marks the right hand."""
     beat = 60.0 / bpm
     return [

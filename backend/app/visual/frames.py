@@ -178,7 +178,10 @@ def sample_frames(path: Path, info: VideoInfo, settings: Settings, *, count: int
         ]
         try:
             with stream_sandboxed(
-                argv, cwd=path.parent, timeout=settings.ffmpeg_timeout_seconds, limits=ResourceLimits.for_media(settings)
+                argv,
+                cwd=path.parent,
+                timeout=settings.ffmpeg_timeout_seconds,
+                limits=ResourceLimits.for_media(settings),
             ) as pipe:
                 data = _read_exactly(pipe, frame_bytes * (count + 2))
                 pipe.read()  # nothing more is expected; let the tool finish

@@ -33,7 +33,18 @@ from app.visual import audio as sound
 from app.visual.frames import VideoInfo, probe_video, read_strips, sample_frames
 from app.visual.hands import LEFT, RIGHT, UNKNOWN, assign_hands, split_by_pitch
 from app.visual.keyboard import Keyboard, KeyboardView, find_keyboard
-from app.visual.roll import Bar, Roll, Zones, build_zones, read_bars, reduce_strip, scroll_speed, unroll
+from app.visual.roll import (
+    SOLID,
+    Bar,
+    Roll,
+    Zones,
+    build_zones,
+    frame_shifts,
+    read_bars,
+    reduce_strip,
+    scroll_speed,
+    unroll,
+)
 
 log = get_logger(__name__)
 
@@ -83,10 +94,15 @@ class Layout:
     lead: int  # rows from the band's last row down to the row where notes land
     speed_top: int
     key_top: int
+    above: int  # rows read above the band, with it, to follow how far the picture moves each frame
 
     @property
     def strips(self) -> list[tuple[int, int]]:
-        return [(self.band_top, self.band_rows), (self.speed_top, SPEED_ROWS), (self.key_top, KEY_ROWS)]
+        return [
+            (self.band_top - self.above, self.above + self.band_rows),
+            (self.speed_top, SPEED_ROWS),
+            (self.key_top, KEY_ROWS),
+        ]
 
     @property
     def speed_distance(self) -> float:
@@ -113,9 +129,10 @@ def plan_layout(keyboard: Keyboard, fps: float, *, band_rows: int | None = None)
     depth = keyboard.black_bottom - keyboard.top + 1
     key_top = keyboard.top + round(0.35 * depth)
     key_top -= key_top % 2
-    if speed_top < 2 or band_top < speed_top + 8:
+    above = 4 * band_rows
+    if speed_top < 2 or band_top - above < speed_top + 8:
         raise JobError("keyboard_not_found", "The picture leaves too little room above the keyboard to read notes.")
-    return Layout(band_top, band_rows, lead, speed_top, key_top)
+    return Layout(band_top, band_rows, lead, speed_top, key_top, above)
 
 
 def roll_background(samples: NDArray[np.uint8], view: KeyboardView, rows: range) -> NDArray[np.int16]:
@@ -125,7 +142,7 @@ def roll_background(samples: NDArray[np.uint8], view: KeyboardView, rows: range)
     time that this median is a note: then the median over the whole height is used.
     """
     usable = samples[view.usable]
-    own = np.median(usable[:, rows.start : rows.stop], axis=0).astype(np.int16)
+    own: NDArray[np.int16] = np.median(usable[:, rows.start : rows.stop], axis=0).astype(np.int16)
     top = view.keyboard.top
     spread = np.unique(np.linspace(0.15 * top, 0.85 * top, 24).astype(int))
     pooled = np.median(usable[:, spread].reshape(-1, usable.shape[2], 3), axis=0).astype(np.int16)
@@ -139,12 +156,14 @@ class Readings:
     """Everything kept from the pass over all frames."""
 
     solid: NDArray[np.uint8]  # [frames, band rows, zones], see app.visual.roll.StripStats
+    grey: NDArray[np.uint8]  # [frames, band rows, zones]
     cover: NDArray[np.uint8]  # [frames, band rows, coloured zones]
     colour: NDArray[np.uint8]  # [frames, band rows, coloured zones, 3]
     spread: NDArray[np.uint8]  # [frames, band rows, coloured zones]
     upper: NDArray[np.float32]  # [frames, zones] cover in the speed strip
     lit: NDArray[np.bool_]  # [frames, keys]
     present: NDArray[np.bool_]  # [frames] the keyboard is on screen
+    moved: NDArray[np.float32]  # [frames] rows the picture moved since the frame before (NaN: cannot be told)
     gain: NDArray[np.float32]  # [frames] brightness relative to the clean picture (fades)
 
 
@@ -171,7 +190,7 @@ def read_all_frames(
     progress: Progress | None = None,
 ) -> Readings:
     keyboard = view.keyboard
-    band = range(layout.band_top, layout.band_top + layout.band_rows)
+    band = range(layout.band_top - layout.above, layout.band_top + layout.band_rows)
     speed = range(layout.speed_top, layout.speed_top + SPEED_ROWS)
     keys = range(layout.key_top, layout.key_top + KEY_ROWS)
     background = np.concatenate(
@@ -181,9 +200,10 @@ def read_all_frames(
             view.clean[keys.start : keys.stop].astype(np.int16),
         ]
     )
-    band_rows = slice(0, layout.band_rows)
-    speed_rows = slice(layout.band_rows, layout.band_rows + SPEED_ROWS)
-    key_rows = slice(layout.band_rows + SPEED_ROWS, layout.band_rows + SPEED_ROWS + KEY_ROWS)
+    tall = layout.above + layout.band_rows
+    key_rows = slice(tall + SPEED_ROWS, tall + SPEED_ROWS + KEY_ROWS)
+    most = min(tall // 2, 3 * layout.band_rows)  # the furthest the picture can be followed from frame to frame
+    last_mask: NDArray[np.bool_] | None = None
 
     profile = _key_profile(zones, keyboard)
     usable = profile >= 0
@@ -195,7 +215,7 @@ def read_all_frames(
 
     expected = info.frames + 8
     parts: dict[str, list[NDArray[np.generic]]] = {
-        name: [] for name in ("solid", "cover", "colour", "spread", "upper", "lit", "present", "gain")
+        name: [] for name in ("solid", "grey", "cover", "colour", "spread", "upper", "lit", "present", "gain", "moved")
     }
     done = 0
     for chunk in read_strips(video, info, settings, layout.strips):
@@ -216,8 +236,18 @@ def read_all_frames(
             chunk = chunk.copy()
             scaled = chunk[faded].astype(np.float32) / gain[faded, None, None, None]
             chunk[faded] = np.clip(scaled, 0, 255).astype(np.uint8)
-        stats = reduce_strip(chunk, background, zones)
-        key_cover = stats.solid[:, key_rows].mean(axis=1)  # [frames, zones]
+        # How far the picture moved since the frame before, from the tall strip (every sixth column is plenty).
+        thin = chunk[:, :tall, ::6].astype(np.int16) - background[None, :tall, ::6]
+        masks = (np.abs(thin) > SOLID).any(axis=-1)
+        joined = masks if last_mask is None else np.concatenate((last_mask[None], masks))
+        moved = frame_shifts(joined, most)
+        parts["moved"].append(moved if last_mask is not None else np.concatenate(([np.nan], moved)).astype(np.float32))
+        last_mask = masks[-1]
+        stats = reduce_strip(chunk[:, layout.above :], background[layout.above :], zones)
+        band_rows_cut = slice(0, layout.band_rows)
+        speed_rows_cut = slice(layout.band_rows, layout.band_rows + SPEED_ROWS)
+        key_rows_cut = slice(layout.band_rows + SPEED_ROWS, layout.band_rows + SPEED_ROWS + KEY_ROWS)
+        key_cover = stats.solid[:, key_rows_cut].mean(axis=1)  # [frames, zones]
         lit = np.zeros((frames, len(keyboard.keys)), dtype=bool)
         for index, key in enumerate(keyboard.keys):
             if not zones.readable[index]:
@@ -229,11 +259,12 @@ def read_all_frames(
             else:
                 lit[:, index] = key_cover[:, zones.core[index]] >= 0.5
         lit &= present[:, None]
-        parts["solid"].append(np.rint(stats.solid[:, band_rows] * 255).astype(np.uint8))
-        parts["cover"].append(np.rint(stats.cover[:, band_rows] * 255).astype(np.uint8))
-        parts["colour"].append(np.rint(stats.colour[:, band_rows]).astype(np.uint8))
-        parts["spread"].append(np.clip(np.rint(stats.spread[:, band_rows]), 0, 255).astype(np.uint8))
-        parts["upper"].append(stats.solid[:, speed_rows].mean(axis=1))
+        parts["solid"].append(np.rint(stats.solid[:, band_rows_cut] * 255).astype(np.uint8))
+        parts["grey"].append(np.rint(stats.grey[:, band_rows_cut]).astype(np.uint8))
+        parts["cover"].append(np.rint(stats.cover[:, band_rows_cut] * 255).astype(np.uint8))
+        parts["colour"].append(np.rint(stats.colour[:, band_rows_cut]).astype(np.uint8))
+        parts["spread"].append(np.clip(np.rint(stats.spread[:, band_rows_cut]), 0, 255).astype(np.uint8))
+        parts["upper"].append(stats.solid[:, speed_rows_cut].mean(axis=1))
         parts["lit"].append(lit)
         parts["present"].append(present)
         parts["gain"].append(gain.astype(np.float32))
@@ -243,7 +274,7 @@ def read_all_frames(
     if done == 0:
         raise JobError("decode_failed", "No video frames could be read.")
     joined = {name: np.concatenate(values) for name, values in parts.items()}
-    return Readings(**joined)  # type: ignore[arg-type]
+    return Readings(**joined)
 
 
 def measure_speed(readings: Readings, zones: Zones, layout: Layout, info: VideoInfo, roll_height: int) -> float:
@@ -269,17 +300,54 @@ def measure_speed(readings: Readings, zones: Zones, layout: Layout, info: VideoI
     return speed
 
 
-def unroll_readings(readings: Readings, speed: float, layout: Layout) -> Roll:
+UNEVEN = 0.75  # rows: a picture that moves less evenly than this from frame to frame is a screen recording
+
+
+def scroll_positions(
+    readings: Readings, speed: float, fps: float
+) -> tuple[NDArray[np.float64], NDArray[np.float64], bool]:
+    """(shown, even, steady): how far the roll had scrolled in each frame.
+
+    A video rendered from the notes moves the same distance every frame: ``speed`` times the
+    frame number says it all, exactly. A screen recording repeats and skips frames, so the
+    distance moved is taken as measured, frame by frame. Its roll still runs evenly with
+    the sound, which a running average of the measured positions recovers.
+    """
+    count = len(readings.moved)
+    measured = readings.moved[readings.present & ~np.isnan(readings.moved)]
+    line = speed * np.arange(count, dtype=np.float64)
+    if len(measured) < 30:
+        return line, line, True
+    spread = float(np.median(np.abs(measured - np.median(measured)))) * 1.4826
+    if spread < UNEVEN and abs(float(np.median(measured)) - speed) < 0.2 * speed:
+        return line, line, True
+    moved = np.where(np.isnan(readings.moved) | ~readings.present, speed, readings.moved).astype(np.float64)
+    shown = np.cumsum(moved)
+    window = max(9, int(round(fps)) | 1)
+    padded = np.concatenate(
+        (
+            shown[0] - moved[0] * np.arange(window // 2, 0, -1),
+            shown,
+            shown[-1] + moved[-1] * np.arange(1, window // 2 + 1),
+        )
+    )
+    even = np.convolve(padded, np.ones(window) / window, mode="valid")
+    return shown, even, False
+
+
+def unroll_readings(readings: Readings, shown: NDArray[np.float64], even: NDArray[np.float64], layout: Layout) -> Roll:
     frames = np.flatnonzero(readings.present)
     if len(frames) == 0:
         raise JobError("keyboard_not_found", "The keyboard is never on screen long enough to read notes.")
     return unroll(
         readings.solid[frames],
+        readings.grey[frames],
         readings.cover[frames],
         readings.colour[frames],
         readings.spread[frames],
         frames,
-        speed,
+        shown,
+        even,
         float(layout.lead),
     )
 
@@ -336,13 +404,15 @@ def check_against_keys(bars: list[Bar], roll: Roll, readings: Readings) -> KeyCh
     explained = np.zeros_like(lit)
     for i, bar in enumerate(bars):
         a, b = start[i] + shift, end[i] + shift
-        inner_a, inner_b = int(np.ceil(a + 1.0)), int(np.floor(b - 1.0))
-        if inner_b > inner_a:
-            window = lit[max(0, inner_a) : min(frames, inner_b), bar.key]
-            confirmed[i] = len(window) > 0 and float(window.mean()) >= 0.7
+        # A key is lit for most of a long note; of a short one it may show only a frame or two,
+        # since the light comes on and goes off over a few frames.
+        inner_a, inner_b = int(np.ceil(a)), int(np.floor(b))
+        window = lit[max(0, inner_a) : min(frames, inner_b), bar.key]
+        if len(window) >= 8:
+            confirmed[i] = float(window.mean()) >= 0.5
         else:
-            window = lit[max(0, int(np.floor(a)) - 1) : min(frames, int(np.ceil(b)) + 2), bar.key]
-            confirmed[i] = bool(window.any())
+            around = lit[max(0, int(np.floor(a)) - 1) : min(frames, int(np.ceil(b)) + 2), bar.key]
+            confirmed[i] = bool(around.any())
         explained[max(0, int(np.floor(a)) - 2) : min(frames, int(np.ceil(b)) + 3), bar.key] = True
     unexplained = []
     for key in range(lit.shape[1]):
@@ -376,16 +446,19 @@ def read_video(
         video, info, settings, samples, view, zones, layout, lambda f, m: report(0.05 + 0.75 * f, m)
     )
     speed = measure_speed(readings, zones, layout, info, keyboard.top)
-    if speed > layout.band_rows - 1:
-        # The notes fall faster than the strip is tall: rows would slip between frames. Read again, taller.
-        layout = plan_layout(keyboard, info.fps, band_rows=int(np.ceil(2 * speed)) + 2)
+    seen_moving = readings.moved[readings.present & ~np.isnan(readings.moved)]
+    fastest = max(speed, float(np.percentile(seen_moving, 99.5)) if len(seen_moving) else 0.0)
+    if fastest > layout.band_rows - 1:
+        # The notes fall further in a frame than the strip is tall: rows would slip between frames. Read again, taller.
+        layout = plan_layout(keyboard, info.fps, band_rows=int(np.ceil(max(2 * speed, fastest + 2))) + 2)
         readings = read_all_frames(
             video, info, settings, samples, view, zones, layout, lambda f, m: report(0.05 + 0.75 * f, m)
         )
         speed = measure_speed(readings, zones, layout, info, keyboard.top)
     del samples
     report(0.82, "Measuring the notes")
-    roll = unroll_readings(readings, speed, layout)
+    shown, even, steady = scroll_positions(readings, speed, info.fps)
+    roll = unroll_readings(readings, shown, even, layout)
     least_rows = max(3, int(round(0.02 * info.fps * speed)))  # nothing shorter than a fiftieth of a second
     bars = read_bars(roll, zones, keyboard, least_rows=least_rows)
     if not bars:
@@ -397,7 +470,9 @@ def read_video(
     check = check_against_keys(bars, roll, readings)
 
     keys = keyboard.keys
-    hands = assign_hands([bar.colour for bar in bars], [keys[bar.key].pitch for bar in bars], [keys[bar.key].black for bar in bars])
+    hands = assign_hands(
+        [bar.colour for bar in bars], [keys[bar.key].pitch for bar in bars], [keys[bar.key].black for bar in bars]
+    )
     hands_from = "colours"
     if all(hand == UNKNOWN for hand in hands):
         # One colour for both hands: the picture does not say which hand plays what.
@@ -406,9 +481,11 @@ def read_video(
     first_frame = int(np.flatnonzero(readings.present)[0])
     head = first_frame + layout.lead / speed + layout.band_rows / speed + 3.0
     rows: list[tuple[float, float, int, str, str]] = []  # start frame, end frame, key, hand, source
+    # The keys light a little before a bar's lower edge reaches the row of the keys; as rows, that is ...
+    early = check.shift * speed
     for bar, hand in zip(bars, hands, strict=True):
         rows.append(
-            (float(roll.frame_of(bar.start)) + check.shift, float(roll.frame_of(bar.end)) + check.shift, bar.key, hand, "bars")
+            (float(roll.clock_of(bar.start + early)), float(roll.clock_of(bar.end + early)), bar.key, hand, "bars")
         )
     recovered = 0
     leftover = []
@@ -437,7 +514,9 @@ def read_video(
         samples_audio, rate = audio
         report(0.9, "Checking the notes against the audio")
         if not keyboard.octave_certain:
-            scores = sound.octave_scores([(s, e, p) for (s, e), p in zip(seconds, pitches, strict=True)], samples_audio, rate)
+            scores = sound.octave_scores(
+                [(s, e, p) for (s, e), p in zip(seconds, pitches, strict=True)], samples_audio, rate
+            )
             octave["agreement"] = {str(k): round(v, 4) for k, v in scores.items()}
             best = sound.best_octave(scores)
             if best is not None:
@@ -467,7 +546,12 @@ def read_video(
     by_hand = {name: sum(note.hand == name for note in notes) for name in (RIGHT, LEFT, UNKNOWN)}
     present = readings.present
     facts: dict[str, object] = {
-        "video": {"width": info.source_width, "height": info.source_height, "read_at": [info.width, info.height], "fps": info.fps},
+        "video": {
+            "width": info.source_width,
+            "height": info.source_height,
+            "read_at": [info.width, info.height],
+            "fps": info.fps,
+        },
         "keyboard": {
             "keys": len(keys),
             "lowest": pitch_name(keyboard.lowest + transpose),
@@ -480,6 +564,7 @@ def read_video(
             "first_second": round(first_frame / info.fps, 3),
             "last_second": round(float(np.flatnonzero(present)[-1]) / info.fps, 3),
             "rows_per_second": round(speed * info.fps, 2),
+            "steady": steady,
             "seconds_on_screen": round(keyboard.top / (speed * info.fps), 2),
         },
         "notes": {

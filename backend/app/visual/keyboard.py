@@ -112,9 +112,9 @@ def keyboard_rows(gray: Gray) -> tuple[int, int, int] | None:
     if not runs:
         return None
     top, end = max(runs, key=lambda run: run[1] - run[0])
-    # Rows of lit keys and labels can break the band for a row or two: join what belongs together.
-    for start, stop in sorted(runs):
-        if 0 < start - end <= 3:
+    # Note names printed across the black keys break the band for a few rows: join what belongs together.
+    for start, stop in _runs(black_band):
+        if 0 < start - end <= max(3, 0.2 * (end - top)):
             end = stop
     white_band = bright_share > 0.8
     below = [run for run in _runs(white_band) if 0 <= run[0] - end <= max(4, 0.01 * height)]

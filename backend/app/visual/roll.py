@@ -13,10 +13,13 @@ measures the bars on it:
    (above the flare drawn where notes land), reduced at once to per-zone numbers
    (``reduce_strip``): how much of the zone is not the empty background, how much of
    it is as bright as a bar, the colour of that part, and how uniform it is.
-3. **Speed.** The same notes pass a second strip higher up some frames earlier; that
-   delay gives the scrolling speed (``scroll_speed``).
-4. **Unrolling.** Each strip row is placed on the roll at the moment it will reach the
-   keyboard (``unroll``). One row of the roll is one pixel of travel: a few milliseconds.
+3. **Motion.** The same notes pass a second strip higher up some frames earlier; that
+   delay gives the scrolling speed (``scroll_speed``). A screen recording does not show
+   the roll at even intervals, though: its frames can repeat or skip, so how far the
+   picture really moved between two frames is also measured (``frame_shifts``).
+4. **Unrolling.** Each strip row is placed on the roll by how far it still has to travel
+   to the keyboard (``unroll``). One row of the roll is one pixel of travel: a few
+   milliseconds.
 5. **Bars.** Along each key, runs of covered rows are notes (``read_bars``).
 
 Two thresholds do different jobs. A bar is *there* wherever its key's zone is not
@@ -31,6 +34,7 @@ repeated notes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -50,7 +54,7 @@ EDGE_FULL = 0.6
 SAME_COLOUR = 50.0  # largest channel difference between two readings of one bar's colour
 UNIFORM = 25.0  # largest grey-level spread across a zone covered by one flat colour
 
-Float = NDArray[np.float32]
+Float = NDArray[np.floating[Any]]
 Bool = NDArray[np.bool_]
 
 
@@ -147,6 +151,7 @@ class StripStats:
     """What each zone shows in each row of a strip, for a run of frames."""
 
     solid: Float  # [frames, rows, zones] share of the zone that has the colour of a bar
+    grey: Float  # [frames, rows, zones] mean grey level of the zone, whatever is in it
     cover: Float  # [frames, rows, coloured zones] share that is not background, however dark
     colour: Float  # [frames, rows, coloured zones, 3] mean RGB of the solid pixels
     spread: Float  # [frames, rows, coloured zones] standard deviation of their grey level
@@ -179,6 +184,7 @@ def reduce_strip(
     variance = np.maximum(square_sum / present - mean_grey**2, 0.0)
     return StripStats(
         solid=(solid_count / size).astype(np.float32),
+        grey=(zone_sums(grey, zones.count) / size).astype(np.float32),
         cover=(faint_count / size[:some]).astype(np.float32),
         colour=(colour_sum / present[..., None]).astype(np.float32),
         spread=np.sqrt(variance).astype(np.float32),
@@ -215,44 +221,89 @@ def scroll_speed(upper: Float, lower: Float, distance: float, *, least: float, m
     return distance / lag
 
 
+def frame_shifts(masks: Bool, most: int) -> Float:
+    """Rows the picture moved down between each frame and the next, from ``masks`` ([frames, rows, columns]).
+
+    ``masks`` marks the bar-coloured pixels of a tall strip of the roll in consecutive frames.
+    Returns one value per pair of neighbouring frames; NaN where too little shows to tell
+    (nothing on screen, or only bars that span the strip, which look the same wherever they are).
+    """
+    before, after = masks[:-1], masks[1:]
+    count, rows = len(before), masks.shape[1]
+    scores = np.zeros((most + 1, count), dtype=np.float32)
+    for shift in range(most + 1):
+        a, b = before[:, : rows - shift], after[:, shift:]
+        union = (a | b).sum(axis=(1, 2))
+        scores[shift] = (a & b).sum(axis=(1, 2)) / np.maximum(union, 1)
+    best = scores.argmax(axis=0)
+    top = scores.max(axis=0)
+    index = np.arange(count)
+    moved = best.astype(np.float32)
+    inner = (best > 0) & (best < most)
+    lower = scores[np.clip(best - 1, 0, most), index]
+    upper = scores[np.clip(best + 1, 0, most), index]
+    bend = lower - 2 * top + upper
+    moved = np.where(inner & (bend < 0), moved + 0.5 * (lower - upper) / np.minimum(bend, -1e-6), moved)
+    content = np.minimum(before.sum(axis=(1, 2)), after.sum(axis=(1, 2)))
+    clear = (top >= 0.5) & (top - np.median(scores, axis=0) >= 0.08) & (content >= 0.002 * before[0].size)
+    return np.where(clear, moved, np.nan).astype(np.float32)
+
+
 @dataclass
 class Roll:
     """The piano roll put back together: one row per pixel of travel."""
 
     solid: Float  # [rows, zones] share of each zone that has the colour of a bar
+    grey: Float  # [rows, zones] mean grey level of each zone
     cover: Float  # [rows, coloured zones] share that is not background
     colour: Float  # [rows, coloured zones, 3]
     spread: Float  # [rows, coloured zones]
     seen: Bool  # [rows] rows some frame showed
-    first: float  # frame (fractional) at which row 0 reaches the keyboard
-    speed: float  # rows per frame
+    origin: float  # how far the roll had scrolled where row 0 reaches the keyboard
+    shown: NDArray[np.float64]  # [frames] how far the roll had scrolled in each frame, as shown
+    even: NDArray[np.float64]  # [frames] the same with the unevenness of a screen recording taken out
+    speed: float  # rows per frame, on average
 
-    def frame_of(self, row: float | NDArray[np.float64]) -> float | NDArray[np.float64]:
-        """The frame at which roll row ``row`` reaches the keyboard."""
-        return self.first + np.asarray(row, dtype=np.float64) / self.speed
+    def frame_of(self, row: float | NDArray[np.float64]) -> NDArray[np.float64]:
+        """The frame in which roll row ``row`` is seen reaching the keyboard."""
+        return np.interp(self.origin + np.asarray(row, dtype=np.float64), self.shown, np.arange(len(self.shown)))
+
+    def clock_of(self, row: float | NDArray[np.float64]) -> NDArray[np.float64]:
+        """When roll row ``row`` reaches the keyboard, in frames of steady time.
+
+        A screen recording shows the roll at uneven moments, but the roll itself runs
+        evenly with the sound: a row's time is where it lies on the roll, not the frame
+        that happened to show it land.
+        """
+        return np.interp(self.origin + np.asarray(row, dtype=np.float64), self.even, np.arange(len(self.even)))
 
 
 def unroll(
     solid: NDArray[np.uint8],
+    grey: NDArray[np.uint8],
     cover: NDArray[np.uint8],
     colour: NDArray[np.uint8],
     spread: NDArray[np.uint8],
     frames: NDArray[np.int64],
-    speed: float,
+    shown: NDArray[np.float64],
+    even: NDArray[np.float64],
     lead: float,
 ) -> Roll:
     """Place every strip row on the roll.
 
     ``solid`` ([frames, rows, zones], 0..255), ``cover``, ``colour`` and ``spread`` hold the note
     strip of the frames numbered ``frames``; the strip's last row is ``lead`` rows above the row
-    where notes land. A row seen in several frames is averaged.
+    where notes land. ``shown`` says how far the roll had scrolled in every frame of the video.
+    A row seen in several frames is averaged.
     """
     rows, zones, coloured = solid.shape[1], solid.shape[2], cover.shape[2]
     # Row r of the strip is (lead + rows - 1 - r) rows above the landing row.
     travel = lead + (rows - 1 - np.arange(rows))
-    origin = float(frames[0] * speed + travel.min())
-    length = int(np.rint(frames[-1] * speed + travel.max() - origin)) + 1
+    scrolled = shown[frames]
+    origin = float(scrolled[0] + travel.min())
+    length = int(np.rint(scrolled[-1] + travel.max() - origin)) + 1
     out_solid = np.zeros((length, zones), dtype=np.float32)
+    out_grey = np.zeros((length, zones), dtype=np.float32)
     out_cover = np.zeros((length, coloured), dtype=np.float32)
     out_colour = np.zeros((length, coloured, 3), dtype=np.float32)
     out_spread = np.zeros((length, coloured), dtype=np.float32)
@@ -260,11 +311,12 @@ def unroll(
     block = 1500  # frames at a time, to keep the float copies of the strips small
     for begin in range(0, len(frames), block):
         chosen = slice(begin, begin + block)
-        position = frames[chosen, None] * speed + travel[None, :]
-        index = np.rint(position - origin).astype(np.int64).ravel()
+        position = scrolled[chosen, None] + travel[None, :]
+        index = np.clip(np.rint(position - origin).astype(np.int64), 0, length - 1).ravel()
         times += np.bincount(index, minlength=length).astype(np.float32)
         weight = solid[chosen].reshape(-1, zones).astype(np.float32) / 255.0
         np.add.at(out_solid, index, weight)
+        np.add.at(out_grey, index, grey[chosen].reshape(-1, zones).astype(np.float32))
         np.add.at(out_cover, index, cover[chosen].reshape(-1, coloured).astype(np.float32) / 255.0)
         part = weight[:, :coloured]
         np.add.at(out_colour, index, colour[chosen].reshape(-1, coloured, 3).astype(np.float32) * part[..., None])
@@ -272,17 +324,23 @@ def unroll(
     weighed = np.maximum(out_solid[:, :coloured], 1e-6)
     out_colour /= weighed[..., None]
     out_spread /= weighed
-    shown = np.maximum(times, 1.0)[:, None]
-    out_solid /= shown
-    out_cover /= shown
+    seen = np.maximum(times, 1.0)[:, None]
+    out_solid /= seen
+    out_grey /= seen
+    out_cover /= seen
+    # Strictly increasing, so that a place on the roll has one frame (a repeated frame scrolls nothing).
+    ramp = 1e-6 * np.arange(len(shown))
     return Roll(
         solid=out_solid,
+        grey=out_grey,
         cover=out_cover,
         colour=out_colour,
         spread=out_spread,
         seen=times > 0,
-        first=origin / speed,
-        speed=speed,
+        origin=origin,
+        shown=shown + ramp,
+        even=even + ramp,
+        speed=float((shown[frames[-1]] - shown[frames[0]]) / max(1, frames[-1] - frames[0])),
     )
 
 
@@ -398,16 +456,42 @@ def key_presence(roll: Roll, zones: Zones, keyboard: Keyboard) -> tuple[Bool, Bo
     return present, doubtful
 
 
+DIM = 0.5  # a zone this much darker than the bar around it, measured from the background, is a line across it
+# Below this many columns per white key the corners of a bar are a pixel or two and do not
+# survive video compression; the dark line between two touching bars is read instead. Above
+# it the corners are read alone: there, the strokes of a note name can pass for such a line.
+SMALL_KEYS = 40.0
+
+
+def _dim(level: Float, floor: float) -> Bool:
+    """Rows where ``level`` (grey along one bar) falls well below the bar's own level."""
+    body = float(np.median(level))
+    if body - floor < 30.0:
+        return np.zeros(len(level), dtype=bool)
+    return (level - floor) <= DIM * (body - floor)
+
+
 def _split_at_notches(
     start: int,
     end: int,
-    edges: list[tuple[Float, Bool]],
+    edges: list[tuple[Float, Bool, Float]],
     middle: Float,
     spread: Float,
+    grey: Float,
+    tone: Float,
+    floor: float,
     least: int,
     longest: int,
+    lines: bool,
 ) -> list[tuple[int, int, bool]]:
-    """Cut the run [start, end) wherever the corners of two touching bars leave a notch.
+    """Cut the run [start, end) wherever two touching bars meet.
+
+    Two signs are read. The corners: bars are rounded, so where two meet the background shows
+    at the sides (``edges``: per side, the cover of its corner strip, the rows where another
+    key's bar hides it, and its grey level). And the outlines: each bar is drawn with a dark
+    edge, so where two meet a dark line crosses the whole width, sides and ``grey`` middle
+    alike. The second sign is what is left of the first in a small picture, and is read
+    only there (``lines``).
 
     ``edges`` holds, for each side of the bar, how much of its corner strip has the colour
     of a bar, and the rows where another key's bar hides that strip. A notch is a short
@@ -416,20 +500,24 @@ def _split_at_notches(
     losing its colour (the dark outlines of two bars) is the only sign.
 
     The glyphs of a note name can darken both sides of a narrow bar at once. They are told
-    from a notch by ``spread``: across a name the bar's middle is a mix of colours, across
-    a notch it is one.
+    from a notch by the bar's middle: across a name it is a mix of colours (``spread``) or
+    lighter than the bar (``tone``, the grey of what has a bar's colour there: a name is
+    printed in white); across a notch it is the bar's own colour or its dark outline.
     """
     length = end - start
     visible = np.zeros(length, dtype=bool)
     empty = np.ones(length, dtype=bool)
     full = np.zeros(length, dtype=bool)
-    for cover, hidden in edges:
+    dark = _dim(grey[start:end], floor) if lines else np.zeros(length, dtype=bool)
+    for cover, hidden, level in edges:
         seen = ~hidden[start:end]
         visible |= seen
         empty &= ~seen | (cover[start:end] < EDGE_EMPTY)
         full |= seen & (cover[start:end] >= EDGE_FULL)
+        dark &= ~seen | _dim(level[start:end], floor)
     unseen = ~visible
-    notch = (visible & empty) | (unseen & (middle[start:end] < COVERED))
+    body_tone = float(np.median(tone[start:end]))
+    notch = (visible & (empty | dark)) | (unseen & (middle[start:end] < COVERED))
     full = np.where(unseen, middle[start:end] >= EDGE_FULL, full)
     pieces: list[tuple[int, int, bool]] = []
     cursor, joined = start, False
@@ -440,6 +528,8 @@ def _split_at_notches(
         if full[:a].sum() < least or full[b:].sum() < least:
             continue
         if float(spread[start + a : start + b].min()) > UNIFORM:
+            continue
+        if float(tone[start + a : start + b].max()) > body_tone + 25.0:
             continue
         cut = start + (a + b) // 2
         if cut - cursor >= least and end - cut >= least:
@@ -484,6 +574,7 @@ def read_bars(roll: Roll, zones: Zones, keyboard: Keyboard, *, least_rows: int =
     keys = keyboard.keys
     none = np.zeros(rows, dtype=bool)
     longest_notch = max(6, round(0.6 * keyboard.white_width))
+    floor = float(np.percentile(roll.grey[roll.seen], 20)) if roll.seen.any() else 0.0  # the empty background
     bars: list[Bar] = []
     for index, key in enumerate(keys):
         if not zones.readable[index]:
@@ -502,18 +593,43 @@ def read_bars(roll: Roll, zones: Zones, keyboard: Keyboard, *, least_rows: int =
             ]
             parts = [(int(zones.core[index]), -1)]
         widths = [float(zones.x1[part] - zones.x0[part]) if part >= 0 else 0.0 for part, _ in parts]
-        middle = sum(_zone(roll.solid, part) * width for (part, _), width in zip(parts, widths, strict=True)) / sum(widths)
+        middle = sum(_zone(roll.solid, part) * width for (part, _), width in zip(parts, widths, strict=True)) / sum(
+            widths
+        )
         solid = sum(_zone(roll.solid, part) * width for (part, _), width in zip(parts, widths, strict=True))
         mixed = sum(
-            _zone(roll.spread, part) * _zone(roll.solid, part) * width for (part, _), width in zip(parts, widths, strict=True)
+            _zone(roll.spread, part) * _zone(roll.solid, part) * width
+            for (part, _), width in zip(parts, widths, strict=True)
         ) / np.maximum(solid, 1e-6)
         edges = [
-            (roll.solid[:, strip], present[:, other] if other >= 0 else none) for strip, other in sides if strip >= 0
+            (roll.solid[:, strip], present[:, other] if other >= 0 else none, roll.grey[:, strip])
+            for strip, other in sides
+            if strip >= 0
         ]
+        tone = sum(
+            roll.colour[:, part].mean(axis=1) * _zone(roll.solid, part) * width
+            for (part, _), width in zip(parts, widths, strict=True)
+            if part >= 0
+        ) / np.maximum(solid, 1e-6)
+        level = sum(_zone(roll.grey, part) * width for (part, _), width in zip(parts, widths, strict=True)) / sum(
+            widths
+        )
         for start, end in _runs(present[:, index]):
             if end - start < least_rows:
                 continue
-            for a, b, joined in _split_at_notches(start, end, edges, middle, mixed, least_rows, longest_notch):
+            for a, b, joined in _split_at_notches(
+                start,
+                end,
+                edges,
+                np.asarray(middle),
+                mixed,
+                np.asarray(level),
+                tone,
+                floor,
+                least_rows,
+                longest_notch,
+                lines=keyboard.white_width < SMALL_KEYS,
+            ):
                 # Colour of the bar: from the parts no other key's bar lies under, where there are any.
                 weights, sums = 0.0, np.zeros(3, dtype=np.float64)
                 for trusted in (True, False):
@@ -531,7 +647,9 @@ def read_bars(roll: Roll, zones: Zones, keyboard: Keyboard, *, least_rows: int =
                 for c, d in _split_at_colour_change(a, b, roll.colour[:, reference], 3 * least_rows):
                     if (c, d) != (a, b):
                         piece = roll.solid[c:d, reference]
-                        mean = (roll.colour[c:d, reference] * piece[:, None]).sum(axis=0) / max(float(piece.sum()), 1e-6)
+                        mean = (roll.colour[c:d, reference] * piece[:, None]).sum(axis=0) / max(
+                            float(piece.sum()), 1e-6
+                        )
                         colour = (float(mean[0]), float(mean[1]), float(mean[2]))
                     else:
                         mean = sums / max(weights, 1e-6)
