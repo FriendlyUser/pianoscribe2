@@ -116,6 +116,86 @@ def beat_position(time: float, beats: list[float]) -> float:
     return low + (time - beats[low]) / (beats[low + 1] - beats[low])
 
 
+DOUBLED = (1.7, 2.4)  # times the beat before it that a tracked beat lasts where the tracker counts every other beat
+ROLLED = 0.2  # of a beat: an octave whose notes are struck within this of each other is one octave, rolled
+
+
+def keep_counting(
+    beats: list[float], exact: list[bool], bars: list[dict], last_onset: float
+) -> tuple[list[float], list[int], list[dict]]:
+    """Beats put back where the tracker, towards the ending, went over to counting every other one.
+
+    As the notes thin out a tracker takes to beats twice as long: a held chord and one note after
+    it give it little to count by. The music's beat does not halve from one beat to the next (a
+    ritardando lengthens it by degrees), and written on the longer beats the same figure is half
+    as long on the page as it was a bar before. So from the first tracked beat, after the last
+    one fitted to the notes, that lasts about twice the beat before it while notes are still to
+    be struck, a beat is put midway through every beat that long, and a bar that has come to
+    twice its beats is two bars. Returns the beats, the indices of those put in, and the bars.
+    """
+    fitted = [i for i, ok in enumerate(exact) if ok]
+    if not fitted or fitted[-1] < 1:
+        return beats, [], bars
+    first = fitted[-1] + 1
+    out = list(beats[:first])
+    added: list[int] = []
+    before = beats[first - 1] - beats[first - 2]
+    for i in range(first, len(beats)):
+        length = beats[i] - beats[i - 1]
+        doubled = length >= 1.4 * before if added else DOUBLED[0] <= length / before <= DOUBLED[1]
+        if doubled and (added or beats[i - 1] <= last_onset + 0.5 * before):
+            added.append(len(out))
+            out.append((beats[i - 1] + beats[i]) / 2.0)
+            before = length / 2.0
+        else:
+            before = length
+        out.append(beats[i])
+    if not added:
+        return beats, [], bars
+    lines = sorted(bars, key=lambda bar: float(bar["start"]))
+    extra: list[dict] = []
+    for bar, following in zip(lines, lines[1:], strict=False):
+        a, b = (round(beat_position(float(line["start"]), out)) for line in (bar, following))
+        count = int(bar.get("beats") or 4)
+        if not any(a < index < b for index in added):
+            continue
+        extra += [{**bar, "start": out[k]} for k in range(a + count, min(b, len(out)), count)]
+    return out, added, sorted([*lines, *extra], key=lambda bar: float(bar["start"]))
+
+
+def gather_rolled(struck: list[float], notes: list[dict], beats: list[float]) -> int:
+    """Give the notes of each rolled octave one moment (``struck`` is changed in place); returns how many octaves.
+
+    A player's hand often rolls an octave: its lower note a few hundredths of a second before the
+    upper, further apart than the notes of a chord are and closer than any note value is long.
+    Written as struck, the lower note would stand a sixteenth before the upper, tied to nothing.
+    Notes of one hand an octave or two apart, each struck within a fifth of a beat of the one
+    before and all of them within that, no pitch among them twice (that is a tremolo), are one
+    chord: it is written where its last note is struck, which is where the hand lands.
+    """
+    rolled = 0
+    for left in (True, False):
+        by_class: dict[int, list[int]] = {}
+        for i in sorted(range(len(notes)), key=lambda i: struck[i]):
+            if (notes[i]["hand"] == "left") == left:
+                by_class.setdefault(int(notes[i]["pitch"]) % 12, []).append(i)
+        for same in by_class.values():
+            run = [same[0]]
+            for i in [*same[1:], -1]:
+                k = min(max(math.floor(beat_position(struck[run[-1]], beats)), 0), len(beats) - 2)
+                reach = ROLLED * (beats[k + 1] - beats[k])
+                if i >= 0 and struck[i] - struck[run[-1]] <= reach:
+                    run.append(i)
+                    continue
+                pitches = [int(notes[j]["pitch"]) for j in run]
+                if 0.0 < struck[run[-1]] - struck[run[0]] <= reach and len(set(pitches)) == len(pitches):
+                    for j in run:
+                        struck[j] = struck[run[-1]]
+                    rolled += 1
+                run = [i]
+    return rolled
+
+
 STRAIGHT = (0, 3, 6, 9)  # quarters of the beat, in ticks
 
 
@@ -617,6 +697,9 @@ class Plan:
     steady: Steady | None = None  # the beat the notes keep, where they keep one
     shared: int = 0  # notes written on the other hand's staff, their chord being too wide for one hand
     rung: int = 0  # chords written out beyond the release of their keys, the pedal holding them
+    rolled: int = 0  # octaves rolled by the player's hand, written as one chord
+    beats_put_back: int = 0  # beats put in where the tracker counted every other one (see ``keep_counting``)
+    starts: dict[int, int] = field(default_factory=dict)  # index of each note -> the tick it is written on
     voices: dict[int, int] = field(default_factory=dict)  # staff -> voices used
 
 
@@ -627,9 +710,13 @@ def plan_score(notes: list[dict], annotation: dict, *, let_ring: bool = False) -
     """
     onsets = [float(n["start"]) for n in notes]
     steady = steady_beats(annotation, onsets)
-    annotation = {**annotation, "beats": steady.beats, "bars": steady.bars}
     beats = snap_beats(steady.beats, onsets, exact=steady.fitted)
     moved = sum(abs(a - b) > 1e-6 for a, b in zip(steady.beats, beats, strict=True))
+    beats, put_back, bars = keep_counting(beats, steady.fitted, steady.bars, max(onsets, default=0.0))
+    how_exactly = list(steady.scatter)  # per beat, as steady.scatter: the beats put back are the tracker's
+    for index in put_back:
+        how_exactly.insert(index, float("inf"))
+    annotation = {**annotation, "beats": beats, "bars": bars}
     # Notes struck together are written together: each takes the time of its moment.
     struck = list(onsets)
     group: list[int] = []
@@ -642,23 +729,26 @@ def plan_score(notes: list[dict], annotation: dict, *, let_ring: bool = False) -
         group = [index]
     # Read finely or coarsely is a matter of the whole video (its frame rate, its picture), not of
     # one stretch whose few notes happen to sit well.
-    fitted = sorted(scatter for scatter in steady.scatter if scatter < float("inf"))
+    fitted = sorted(scatter for scatter in how_exactly if scatter < float("inf"))
     finely = bool(fitted) and fitted[len(fitted) // 2] <= PRECISE
-    fine = {beat for beat, scatter in enumerate(steady.scatter) if finely and scatter <= PRECISE}
+    fine = {beat for beat, scatter in enumerate(how_exactly) if finely and scatter <= PRECISE}
     loose = {
         beat: min(0.075, 2.5 * max(scatter, PRECISE) / (beats[beat + 1] - beats[beat]))
-        for beat, scatter in enumerate(steady.scatter[:-1])
+        for beat, scatter in enumerate(how_exactly[:-1])
         if scatter < float("inf") and beat not in fine
     }
+    rolled = 0 if finely else gather_rolled(struck, notes, beats)
     hands = {
         1: [i for i, n in enumerate(notes) if n["hand"] != "left"],
         2: [i for i, n in enumerate(notes) if n["hand"] == "left"],
     }
     ticked: dict[int, list[tuple[int, int, int]]] = {}
     off_grid = 0
+    written_on: dict[int, int] = {}
     for staff, members in hands.items():
         positions = [beat_position(struck[i], beats) for i in members]
         starts = quantize_onsets(positions, loose)
+        written_on.update(zip(members, starts, strict=True))
         off_grid += sum(
             abs(p * TICKS - t) > max(FIT, loose.get(t // TICKS, FIT)) * TICKS
             for p, t in zip(positions, starts, strict=True)
@@ -676,6 +766,9 @@ def plan_score(notes: list[dict], annotation: dict, *, let_ring: bool = False) -
     plan = Plan(bars=[], written=[], beats=beats, notes=len(every), moved_beats=moved, off_grid=off_grid)
     plan.steady = steady
     plan.shared = shared
+    plan.rolled = rolled
+    plan.starts = written_on
+    plan.beats_put_back = len(put_back)
     chords_by_staff: dict[int, list[list[Chord]]] = {}
     last = min(s for s, _, _ in every) + 1  # the last tick written, once the lengths are settled
     for staff, members in ticked.items():

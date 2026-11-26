@@ -149,13 +149,11 @@ def _extent(on: np.ndarray, first: int, last: int, low: int, high: int) -> tuple
     return first, last
 
 
-def find_stretches(beats: list[float], times: np.ndarray) -> list[Stretch]:
-    """The stretches of steady tempo in the moments ``times`` (see ``moments``), in order, none overlapping another."""
-    tracked = np.asarray(beats, dtype=np.float64)
-    if len(tracked) < 4 or len(times) < LEAST_ONSETS:
-        return []
+def _windows(tracked: np.ndarray, times: np.ndarray) -> list[tuple[float, float, float, float]]:
+    """(centre, period, a grid line, scatter as a share of the step) of the grid that fits the onsets best in each
+    window of ``WINDOW_BEATS``, ``HOP_BEATS`` apart; the share is infinite where a window holds too few onsets."""
     usual = float(np.median(np.diff(tracked)))
-    seeds: list[tuple[float, float, float, float]] = []  # scatter share, centre, period, a grid line
+    found: list[tuple[float, float, float, float]] = []
     centre = float(times[0])
     while centre <= times[-1]:
         local = np.diff(tracked[(tracked >= centre - 8 * usual) & (tracked <= centre + 8 * usual)])
@@ -163,9 +161,45 @@ def find_stretches(beats: list[float], times: np.ndarray) -> list[Stretch]:
         inside = times[np.abs(times - centre) <= WINDOW_BEATS / 2.0 * about]
         if len(inside) >= LEAST_ONSETS and np.ptp(inside) >= 4 * about:
             period, line, share = _sharpest(inside, about * np.linspace(1.0 - TEMPO_RANGE, 1.0 + TEMPO_RANGE, 801))
-            if share <= SHARP:
-                seeds.append((share, centre, period, line))
+            found.append((centre, period, line, share))
+        else:
+            found.append((centre, about, centre, float("inf")))
         centre += HOP_BEATS * about
+    return found
+
+
+WANDERS = 0.003  # change of tempo between windows a bar and a half apart above which no click keeps the player's time
+APART = 6  # windows: three bars' worth of hops, so that two windows compared share no more than half their notes
+
+
+def wander(tracked: np.ndarray, times: np.ndarray) -> float | None:
+    """How far the tempo the notes keep changes from one window of three bars to one a bar and a half on: the
+    median change, as a share of the tempo. None where too few windows keep any tempo to say.
+
+    A video drawn from a score, or played to a click, keeps its tempo to a fifth of a per cent
+    from window to window (which is what reading it coarsely leaves uncertain), but for the few
+    places where the tempo is changed. A player keeping time alone is a per cent off from one
+    window to the next, all the way through.
+    """
+    if len(tracked) < 4 or len(times) < LEAST_ONSETS:
+        return None
+    periods = np.array([period if share <= SHARP else np.nan for _, period, _, share in _windows(tracked, times)])
+    if len(periods) <= APART:
+        return None
+    change = np.abs(np.log(periods[APART:] / periods[:-APART]))
+    change = change[np.isfinite(change)]
+    return float(np.median(change)) if len(change) >= 8 else None
+
+
+def find_stretches(beats: list[float], times: np.ndarray) -> list[Stretch]:
+    """The stretches of steady tempo in the moments ``times`` (see ``moments``), in order, none overlapping another."""
+    tracked = np.asarray(beats, dtype=np.float64)
+    if len(tracked) < 4 or len(times) < LEAST_ONSETS:
+        return []
+    # scatter share, centre, period, a grid line
+    seeds = [
+        (share, centre, period, line) for centre, period, line, share in _windows(tracked, times) if share <= SHARP
+    ]
     # The sharpest window first: each grows into the stretch around it, as far as the onsets keep its beat.
     found: list[tuple[int, int, Stretch]] = []
     for _, centre, period, line in sorted(seeds):
@@ -341,6 +375,7 @@ class Steady:
     tracked_bars: int = 0  # bar lines left where the tracker heard them
     within: float = 0.012  # seconds within which onsets are one moment (see ``moments``)
     rephased: int = 0  # stretches whose beat is another quarter of their grid than the tracked beats within them mark
+    followed: dict | None = None  # the notes keep no click's time: the beat heard was followed (see ``follow``)
 
 
 def _join(a: Stretch, b: Stretch, times: np.ndarray) -> tuple[str, tuple[int, ...]]:
@@ -430,6 +465,25 @@ def _smooth_phases(phases: list[int], count: int, change: float = 3.0) -> list[i
     return out[::-1]
 
 
+def _phases(lines: list[float], tracked_bars: list[dict], usual: tuple[int, int]) -> list[tuple[int, int]] | None:
+    """(index into ``lines``, smoothed place in the bar) of each tracked bar line within the beat lines ``lines``, or
+    None when the bars tracked there are mostly not of the usual kind (``usual``: beats, unit)."""
+    count = usual[0]
+    inside = [b for b in tracked_bars if lines[0] - 0.25 * (lines[1] - lines[0]) <= float(b["start"]) <= lines[-1]]
+    if len(inside) < 2 or sum((int(b.get("beats") or 4), int(b.get("unit") or 4)) == usual for b in inside) < 0.8 * len(
+        inside
+    ):
+        return None
+    at = [int(np.argmin(np.abs(np.asarray(lines) - float(b["start"])))) for b in inside]
+    # A bar line tracked about halfway between two beats (the tracker had the off-beat for the
+    # beat there) says nothing about which of the two begins the bar.
+    beat = float(np.median(np.diff(lines)))
+    clear = [i for i, b in zip(at, inside, strict=True) if abs(lines[i] - float(b["start"])) <= 0.3 * beat]
+    if len(clear) < 2:
+        return None
+    return list(zip(clear, _smooth_phases([i % count for i in clear], count), strict=True))
+
+
 def _on_onsets(a: float, b: float, count: int, gap: np.ndarray, before: float) -> list[float] | None:
     """``count`` beats between the lines ``a`` and ``b``, each on one of the onsets ``gap``, so that the beat
     changes length as evenly as it can (a ritardando: the notes still fall on the beats). None if too few onsets."""
@@ -446,6 +500,227 @@ def _on_onsets(a: float, b: float, count: int, gap: np.ndarray, before: float) -
         if best is None or cost < best[0]:
             best = (cost, chosen)
     return list(best[1]) if best else None
+
+
+def _as_written(lines: list[float], times: np.ndarray, reach: float = 0.17) -> list[float]:
+    """Beats heard as the score writer goes on to move them (``exact_score.snap_beats``): each onto the note struck
+    within ``reach`` of a beat of it, the others keeping their place between those."""
+    moved = list(lines)
+    anchors: list[int] = []
+    for i in range(len(lines)):
+        around = [lines[j + 1] - lines[j] for j in (i - 1, i) if 0 <= j < len(lines) - 1]
+        near = times[np.abs(times - lines[i]) <= reach * min(around)] if around else times[:0]
+        if len(near):
+            moved[i] = float(near[np.argmin(np.abs(near - lines[i]))])
+            anchors.append(i)
+    for a, b in zip(anchors, anchors[1:], strict=False):
+        for i in range(a + 1, b):
+            moved[i] = moved[a] + (lines[i] - lines[a]) / (lines[b] - lines[a]) * (moved[b] - moved[a])
+    if anchors:
+        for i in range(anchors[0]):
+            moved[i] = lines[i] + moved[anchors[0]] - lines[anchors[0]]
+        for i in range(anchors[-1] + 1, len(lines)):
+            moved[i] = lines[i] + moved[anchors[-1]] - lines[anchors[-1]]
+    return moved if all(b > a for a, b in zip(moved, moved[1:], strict=False)) else list(lines)
+
+
+HALF = (0.35, 0.65)  # of the beat: how long a beat heard lasts where the tracker goes over to the off-beat, or back
+TWICE = (1.6, 2.5)  # of the beat: how long a beat heard lasts where the tracker lost one
+
+
+def _usual(beats: list[float]) -> np.ndarray:
+    """About how long a beat is around each interval between ``beats``: the median of the dozen about it."""
+    lengths = np.diff(beats)
+    return np.array([float(np.median(lengths[max(0, k - 6) : k + 7])) for k in range(len(lengths))])
+
+
+def mend(tracked: np.ndarray, times: np.ndarray, tracked_bars: list[dict]) -> tuple[list[float], dict[str, int]]:
+    """The beats heard, each on the note struck on it, put right where the tracker contradicts itself; and how many
+    beats were put in, taken out, and moved from the off-beat onto the beat.
+
+    A tracker follows a player closely: through a bar broadened before a new verse, a beat
+    hurried, a tempo that drifts from line to line. Its mistakes are few, and of a kind its own
+    beats show, one against the next:
+
+    - A beat twice as long as those about it, in a bar that then counts a beat too few, is two
+      beats, one of them lost. So is every such beat before the first note and after the last,
+      where the tracker has nothing to count by and the music's beat goes on as it was.
+    - Two beats of half the length are one beat, counted twice.
+    - One beat of half the length, or of one and a half with notes struck in it: from there on
+      the tracker has the off-beat for the beat, or had it until there. The notes run on through
+      the place, so on one side every beat is half a beat out: the side with fewer beats on it,
+      unless the piece begins on a beat of that side and it holds a quarter of the beats or more
+      (music begins on a beat far more often than off one). That side's beats are put midway
+      between where they were heard.
+    """
+    beats = _as_written([float(t) for t in tracked], times)
+    mended = {"put_in": 0, "taken_out": 0, "off_the_off_beat": 0}
+    if len(beats) < 8 or len(times) == 0:
+        return beats, mended
+    first_note, last_note = float(times[0]), float(times[-1])
+
+    # A beat counted twice.
+    usual = _usual(beats)
+    k = 0
+    while k + 2 < len(beats):
+        a, b = (beats[k + 1] - beats[k]) / usual[k], (beats[k + 2] - beats[k + 1]) / usual[k]
+        if HALF[0] <= a <= HALF[1] and HALF[0] <= b <= HALF[1]:
+            del beats[k + 1]
+            mended["taken_out"] += 1
+            usual = _usual(beats)
+        else:
+            k += 1
+
+    # A beat lost: within the music, where its bar is a beat short; outside it, wherever the tracker took to longer beats.
+    meters = {float(bar["start"]): int(bar.get("beats") or 4) for bar in tracked_bars}
+    lines = sorted(meters)
+    within = [b for b in beats if first_note - 1e-3 <= b <= last_note + 1e-3]
+    music = float(np.median(np.diff(within))) if len(within) >= 3 else float(np.median(np.diff(beats)))
+    out = [beats[0]]
+    for k in range(1, len(beats)):
+        length = beats[k] - beats[k - 1]
+        outside = beats[k - 1] <= first_note - 0.25 * music or beats[k - 1] >= last_note - 0.25 * music
+        about = music if outside else float(usual[k - 1])
+        if TWICE[0] <= length / about <= TWICE[1]:
+            short = False
+            if not outside:
+                bar = [line for line in lines if line <= beats[k - 1] + 0.25 * about]
+                later = [line for line in lines if line > beats[k - 1] + 0.25 * about]
+                if bar and later:
+                    meter = meters[bar[-1]]
+                    held = sum(bar[-1] - 0.25 * about <= t < later[0] - 0.25 * about for t in beats)
+                    short = held < meter
+            if outside or short:
+                out.append((beats[k - 1] + beats[k]) / 2.0)
+                mended["put_in"] += 1
+        out.append(beats[k])
+    beats = out
+
+    # The off-beat taken for the beat: the sides of each place where the tracker changed its mind.
+    usual = _usual(beats)
+    flips = []
+    for k in range(len(beats) - 1):
+        if beats[k + 1] <= first_note or beats[k] >= last_note:
+            continue
+        length = (beats[k + 1] - beats[k]) / usual[k]
+        struck = (
+            (times > beats[k] + 0.15 * (beats[k + 1] - beats[k]))
+            & (times < beats[k + 1] - 0.15 * (beats[k + 1] - beats[k]))
+        ).any()
+        if HALF[0] <= length <= HALF[1] or (1.0 + HALF[0] <= length <= 1.0 + HALF[1] and struck):
+            flips.append(k)
+    if not flips:
+        return beats, mended
+    edges = [0, *[k + 1 for k in flips], len(beats)]
+    sides = [beats[a:b] for a, b in zip(edges, edges[1:], strict=False)]
+    on_side = [sum(first_note - 1e-3 <= t <= last_note + 1e-3 for t in side) for side in sides]
+    count = [sum(on_side[0::2]), sum(on_side[1::2])]
+    wrong = int(count[1] < count[0])  # 1: the sides numbered odd are the fewer
+    # Which side the piece begins on a beat of.
+    begins = None
+    for n, side in enumerate(sides):
+        if side and (side[-1] >= first_note or n == len(sides) - 1):
+            beat = float(np.median(np.diff(side))) if len(side) > 1 else music
+            off = min(abs(first_note - t) for t in side) / beat
+            begins = n % 2 if off <= 0.15 else 1 - n % 2 if abs(off - 0.5) <= 0.15 else None
+            break
+    if begins == wrong and count[wrong] >= 0.25 * sum(count):
+        wrong = 1 - wrong
+    out = []
+    for n, side in enumerate(sides):
+        if n % 2 != wrong:
+            out += side
+            continue
+        beat = float(np.median(np.diff(side))) if len(side) > 1 else music
+        moved = [
+            side[0] - 0.5 * beat,
+            *[(a + b) / 2.0 for a, b in zip(side, side[1:], strict=False)],
+            side[-1] + 0.5 * beat,
+        ]
+        before = sides[n - 1][-1] if n > 0 and sides[n - 1] else None
+        after = sides[n + 1][0] if n + 1 < len(sides) and sides[n + 1] else None
+        if before is not None and moved[0] - before < 0.6 * beat:
+            moved = moved[1:]
+        if after is not None and after - moved[-1] < 0.6 * beat:
+            moved = moved[:-1]
+        out += moved
+        mended["off_the_off_beat"] += len(moved)
+    return out, mended
+
+
+ASTRAY = (0.15, 0.35)  # of a beat: how far from the nearest line a beat heard is that lies on none, nor midway
+
+
+def astray(tracked: np.ndarray, lines: list[float], fitted: list[bool]) -> int:
+    """How many of the beats heard, among beat lines fitted to the notes, lie neither on a line nor midway
+    between two: a quarter of a beat out, more or less.
+
+    A tracker hearing a machine play is a few hundredths of a second off the lines, or half a
+    beat off them (the off-beat taken for the beat), never between. Following a player through a
+    broadened bar, or one whose lines have slipped, it is.
+    """
+    at = np.asarray(lines)
+    count = 0
+    for time in tracked:
+        k = int(np.searchsorted(at, time))
+        if 0 < k < len(at) and fitted[k - 1] and fitted[k]:
+            off = min(time - at[k - 1], at[k] - time) / (at[k] - at[k - 1])
+            count += int(ASTRAY[0] <= off <= ASTRAY[1])
+    return count
+
+
+def follow(
+    tracked: np.ndarray,
+    times: np.ndarray,
+    tracked_bars: list[dict],
+    stretches: list[Stretch],
+    within: float,
+    drift: float | None,
+    strays: int,
+) -> Steady:
+    """The beats and bar lines of notes that keep no click's time: the beat heard, followed.
+
+    Lines drawn evenly through such playing (``find_stretches``) hold for a few bars and then
+    are a sixteenth out, or half a beat, with nothing in the notes to say so: a bar broadened by
+    half a beat leaves everything after it on quarters of the old lines' beat. The beat heard
+    goes with the player. It is put right where the tracker contradicts itself (``mend``), the
+    score writer moves each beat onto the note struck on it, and the bar lines are counted in
+    beats from the tracked ones that agree with each other.
+    """
+    beats, mended = mend(tracked, times, tracked_bars)
+    usual = max(
+        {(int(b.get("beats") or 4), int(b.get("unit") or 4)) for b in tracked_bars} or {(4, 4)},
+        key=lambda kind: sum((int(b.get("beats") or 4), int(b.get("unit") or 4)) == kind for b in tracked_bars),
+    )
+    count, unit = usual
+    found = _phases(beats, tracked_bars, usual) if len(beats) >= 2 else None
+    bars: list[dict] = []
+    regular = 0
+    if found is None:
+        bars = [dict(b) for b in tracked_bars]
+    else:
+        governing = 0
+        for index, time in enumerate(beats):
+            while governing + 1 < len(found) and found[governing + 1][0] <= index:
+                governing += 1
+            if index % count == found[governing][1]:
+                bars.append({"start": time, "beats": count, "unit": unit, "meter": f"{count}/{unit}"})
+                regular += 1
+    # How exactly the notes keep the beat, for the writer: as a player does, not as a drawing does.
+    scatter = float(np.median([s.scatter for s in stretches])) if stretches else 0.012
+    scatter = max(scatter, 2.0 * PRECISE)
+    return Steady(
+        beats,
+        [False] * len(beats),
+        [scatter] * len(beats),
+        bars,
+        [],
+        regular,
+        len(bars) - regular,
+        within,
+        0,
+        {"tempo_wanders": None if drift is None else round(drift, 4), "beats_heard_astray": strays, **mended},
+    )
 
 
 def steady_beats(annotation: dict, onsets: list[float]) -> Steady:
@@ -507,21 +782,7 @@ def steady_beats(annotation: dict, onsets: list[float]) -> Steady:
     starts = np.array([float(b["start"]) for b in tracked_bars])
 
     def phases(lines: list[float]) -> list[tuple[int, int]] | None:
-        """(index into ``lines``, smoothed place in the bar) of each tracked bar line within the lines, or None
-        when the bars tracked there are mostly not of the usual kind."""
-        inside = [b for b in tracked_bars if lines[0] - 0.25 * (lines[1] - lines[0]) <= float(b["start"]) <= lines[-1]]
-        if len(inside) < 2 or sum(
-            (int(b.get("beats") or 4), int(b.get("unit") or 4)) == usual for b in inside
-        ) < 0.8 * len(inside):
-            return None
-        at = [int(np.argmin(np.abs(np.asarray(lines) - float(b["start"])))) for b in inside]
-        # A bar line tracked about halfway between two beats (the tracker had the off-beat for the
-        # beat there) says nothing about which of the two begins the bar.
-        beat = float(np.median(np.diff(lines)))
-        clear = [i for i, b in zip(at, inside, strict=True) if abs(lines[i] - float(b["start"])) <= 0.3 * beat]
-        if len(clear) < 2:
-            return None
-        return list(zip(clear, _smooth_phases([i % count for i in clear], count), strict=True))
+        return _phases(lines, tracked_bars, usual)
 
     out = [float(t) for t in tracked if t < pieces[0][0] - 0.5 * stretches[0].period]
     fitted = [False] * len(out)
@@ -613,6 +874,15 @@ def steady_beats(annotation: dict, onsets: list[float]) -> Steady:
         }
         for i, (s, piece) in enumerate(zip(stretches, pieces, strict=True))
     ]
+    if within == COARSE_MOMENT:
+        # Read coarsely, a drawing played by a machine and a player keeping time alone look alike
+        # note by note. They differ in the long run, and the lines just drawn are only good for
+        # the first: its tempo holds from window to window, and every beat heard lies on a line
+        # or (the tracker having the off-beat for the beat) midway between two.
+        drift = wander(tracked, times)
+        strays = astray(tracked, out, fitted)
+        if drift is None or drift > WANDERS or strays:
+            return follow(tracked, times, tracked_bars, stretches, within, drift, strays)
     return Steady(out, fitted, scatter, bars, described, regular, len(bars) - regular, within, rephased)
 
 

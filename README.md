@@ -51,12 +51,16 @@ down by rule, so the score is held to a stricter standard: the notes shown, all 
 The beat they are written on is their own, too: a video drawn from a score keeps a beat steady to
 a few milliseconds, which is fitted to the notes (each tempo, and where it changes), so that the
 same figure is written the same way every time. The beat tracker is left to say roughly where the
-beat is and which beats begin a bar.
+beat is and which beats begin a bar. A performance played by hand keeps no such beat (its tempo
+drifts by a per cent from one line to the next, and a bar is broadened before a new verse): there
+the beat heard is followed, each beat moved onto the note struck on it, and put right only where
+the tracker contradicts itself.
 
 | Ground truth | Result |
 |---|---|
 | Rendered video of a piece with every note known (720p, H.264), reader alone | 62 of 62 notes, each with the right key and hand; onsets within 7 ms, ends within 11 ms |
 | The same video through the whole pipeline, against the piece | overall 1.00: every note in its bar, at its beat, with its length, on the staff of its hand; key, meter and tempo exact |
+| 200 performances played by hand, written out with a known beat (a tempo that drifts, a bar broadened before a new verse, beats hurried, a melody over held chords; the tracker on the off-beat for eight bars in 40 of them and a beat short in 40 more), score writer alone | every bar line and every note in its place in all 200 (drawn through the same notes, an even beat misplaces bars in 169) |
 | The same piece rendered as a real piano filmed from above at 480p (all 88 keys, 16 pixels to a white key, dim and unevenly spaced as a camera sees them, every note a white block in a glow of one colour, sparks where notes land, the player's hands over the keys), reader alone | 62 of 62 notes, each with the right key and the right hand (told by where the hands are); onsets within 6 ms, ends within 14 ms |
 
 Real videos have no reference score, so each reading is cross-checked three ways instead (the

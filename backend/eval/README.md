@@ -164,34 +164,65 @@ score here, so what follows are checks, not scores against a truth.
 | Agreement with the pitch of the audio: as named / a semitone either way / an octave down, up | 0.42 / 0.13, 0.14 / 0.35, 0.27 | 0.58 / 0.17, 0.16 / 0.50, 0.35 |
 | Each key's own pitch rising in the audio as its notes are struck, against the semitone either side (bass keys measured over 0.7 s) | 44 of the 45 keys played, by 1.5 times at the least and 6 times typically (the 45th, C sharp 2, never sounds without a note that shares its overtones) | 42 of the 43 keys played, by 1.3 times at the least and 4 times typically (the 43rd, B6, is one soft note in a run) |
 | Notes outside the key | 2 of 1302: an A natural in octaves leading into the change of key | 0 of 1975: every note is in E major |
-| Notes ringing on 0.3 s after their keys are up | 0.23 of their attack (the pedal): written out, not as short notes and rests | 0.24: likewise |
-| Beat | a player's: 18 steady stretches at 113 to 117 to the minute, onsets 6 to 14 ms (RMS) from each grid | steady as a click: 120.00 to the minute throughout, onsets 2 to 5 ms from the grid, with a sawtooth of 6 ms either way every 16.7 s that is in the video itself |
-| Score | A flat major, then B flat major from bar 76; 4/4 throughout, 110 bars; quarter = 115, then 117; *rit.* and *a tempo* at bars 37 and 38 | E major; 4/4 with one bar of 2/4, where the music has two beats more before its last chorus and the tracker hears them too; 117 bars; quarter = 120; *rit.* into a slow close |
+| Notes ringing on 0.3 s after their keys are up | 0.20 of their attack (the pedal): written out, not as short notes and rests | 0.25: likewise |
+| Beat | a player's: the tempo of the notes changes by 0.9% from one window of three bars to one a bar and a half on (0.2% in the other development videos), and 19 beats heard lie a quarter of a beat off the lines drawn evenly through it. The beat heard is followed | steady as a click: 120.00 to the minute throughout, onsets 2 to 5 ms from the grid, with a sawtooth of 6 ms either way every 16.7 s that is in the video itself. Lines drawn through the notes are its beat |
+| Chords written within 0.09 of a beat of where they were struck | 832 of 837; the other five are the lower notes of rolled octaves, written with the upper | 976 of 976 |
+| Score | A flat major, then B flat major from bar 76; 4/4 throughout, 110 bars; quarter = 115; *rit.* at bars 37 and 74, *a tempo* at 40 and 75 | E major; 4/4 with one bar of 2/4, where the music has two beats more before its last chorus and the tracker hears them too; 119 bars; quarter = 120; *rit.* at bar 110, *a tempo* at 111, *rit.* at 117 into the close |
 
-The first of the two is where the beat tracker misled the score. For its first 20 bars the
-left hand repeats a figure of four eighths whose highest note is on the beat and whose lowest is
-on the off-beat, and the tracker took the off-beat for the beat; where the figure gives way to
-one with its bass note first, the tracker put itself right, half a beat later. Written on the
-tracked beats, the piece began with a pickup, every chord of the first 20 bars changed half a
-beat early, and bar 21 had six beats. But from the first note to that bar are 160 eighths to
-within a hundredth of a second: twenty bars of 4/4 exactly, the notes never breaking step. Notes
-that run on keep one beat (`steady_beats.set_phases`), and the score now begins on its downbeat
-with a four-bar introduction and a sixteen-bar verse whose chords change every two bars, on the
-bar lines.
+The first of the two is played by hand, to no click, and showed what an even beat drawn through
+such playing does. Fitted stretch by stretch as for a drawn video, the notes gave 18 stretches at
+113 to 117 to the minute, and most of the piece was written rightly; the bars where the player
+takes time were not. Before the verse at bar 39 and before the change of key at bar 75 a bar is
+broadened by a tenth (a bass note, then three notes of the melody: on the third beat, after it,
+and before the next bar). The beats were put on those notes, the bass note stood on the fourth
+beat of the bar before, and the bar lines fell a beat early for three bars. After the change of
+key the player comes in early, twice, after a silent third beat: the lines of the stretch, drawn
+on, were a sixteenth out for four bars, every chord tied across it. Over a held chord under a
+melody in eighths (bars 85 to 87) the beat ran at double speed for a bar. All the notes were
+read rightly; none of this was in them, only in how they were written.
 
-The slow close of the second showed two more things. A handful of chords far apart, each
+The tracker had every one of those bars right. Against the notes, its beats are out of step once
+in four minutes: one beat of half the length, at 42.5 s. For the first 20 bars the left hand
+repeats a figure of four eighths whose highest note is on the beat and whose lowest is on the
+off-beat, and the tracker took the off-beat for the beat; where the figure gives way to one with
+its bass note first, it put itself right, half a beat later. Written on the tracked beats as
+they were, the piece began with a pickup, every chord of the first 20 bars changed half a beat
+early, and bar 21 had six beats; but from the first note to that bar are 160 eighths to within a
+hundredth of a second, twenty bars of 4/4 exactly. So the piece is written on the beat heard, put
+right where the tracker contradicts itself (`steady_beats.follow`, `mend`): the 80 beats before
+the short one are moved off the off-beat, and the score begins on its downbeat with a four-bar
+introduction and a sixteen-bar verse whose chords change every two bars, on the bar lines.
+
+Two checks of that score. Every chord lies where it was played (the table above), and the bar
+lines stand on the left hand's bass notes throughout. And the even lines, patched until they
+wrote the bars above rightly as well (stretches ended where their notes go over to the quarters
+between the beats; each gap given whichever of the beats heard and the beats on the notes runs
+more evenly), come to the same score: all 1627 notes and rests of all 110 bars, by two ways that
+share nothing but the notes and the tracker's beats. The patches were not kept. Drawn through 200
+performances written out with a known beat (`tests/unit/test_steady_beats.py` has fifteen of
+them), the same even lines misplace bars in 169; following the beat heard writes all 200 rightly.
+
+The slow close of the second showed three more things. A handful of chords far apart, each
 struck by a hand a hundredth of a second across, had been taken for a stretch of steady tempo
 (at 125 to the minute, then 117): counted once each, they are too few, and the close is written
-on the tracked beats, each moved onto the chord struck on it. And the octave lines were engraved
-wrongly: Verovio starts one at the next note it reads after the line's own place in the file,
-whichever staff that note is on, so the left hand's *8vb* was drawn a bar late over the right
-hand's staff, and the right hand's *8va* began a bar late. They are now written where it reads
-them (`app.engrave.verovio_engine.ottavas_in_reading_order`).
+on the tracked beats, each moved onto the chord struck on it. With only a chord every two bars
+to count by, the tracker then took to beats twice as long for the last five seconds: the last
+phrase would have stood in notes half as long as the same phrase two bars before, under a new
+metronome mark of 55. The music's beat does not halve from one beat to the next, so a beat is put
+back between each two (`exact_score.keep_counting`), and the close is three two-bar phrases
+alike, the last with a *rit.* And the octave lines were engraved wrongly: Verovio starts one at
+the next note it reads after the line's own place in the file, whichever staff that note is on,
+so the left hand's *8vb* was drawn a bar late over the right hand's staff, and the right hand's
+*8va* began a bar late. They are now written where it reads them
+(`app.engrave.verovio_engine.ottavas_in_reading_order`).
 
 What these checks cannot show: that every block's length is what its key was held (the blocks
 have a least height, 7 and 12 rows, and under the pedal the lengths are not written anyway);
-that a pedalled note stopped where the score ends it; and which hand played a note where the
-hands crossed or shared a chord.
+that a pedalled note stopped where the score ends it; which hand played a note where the hands
+crossed or shared a chord; and, in the first, that the beat heard is the beat meant wherever the
+tracker is of one mind: the three notes that close each chorus are written on the third beat,
+after it, and before the bar line in the two bars the player broadens, and after the third beat,
+on the fourth, and on the next bar line at the very end, where nothing follows them to say.
 
 ## Score references
 

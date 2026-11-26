@@ -47,11 +47,14 @@ def mark_tempos(measures: list, starts: list[float], end: float, steady: object 
     ritardando. Returns None, having done nothing, when the notes keep no steady beat.
     """
     stretches = getattr(steady, "stretches", None) or []
+    edges = [*starts, end]
+    if getattr(steady, "followed", None):
+        lengths = zip(measures, edges, edges[1:], strict=False)
+        return mark_played(measures, [60.0 * float(measure.length) / (b - a) for measure, a, b in lengths])
     if not stretches:
         return None
     fine = float(np.median([s["scatter_ms"] for s in stretches])) <= 5.0
     apart, lasting = (0.012, 2) if fine else (0.03, 4)
-    edges = [*starts, end]
     tempos = []
     sure = []  # per bar: its tempo is that of a beat fitted to the notes, not the length of a tracked bar
     for k, measure in enumerate(measures):
@@ -74,16 +77,19 @@ def mark_tempos(measures: list, starts: list[float], end: float, steady: object 
     marks = [(0, shown)]
     steady_tempo = float(shown)
     slowed = False
+    closing = len(measures) - 2  # from here on a ritardando is the close of the piece: nothing returns to tempo
     for a, b, tempo in runs:
         measures[a].tempos = [(Fraction(0), tempo)]  # what is played, bar by bar
         if b - a >= lasting:
             # A tracked bar's length says its tempo to a few beats a minute, no better: that is no new tempo.
-            same = round(tempo) == shown or (not all(sure[a:b]) and abs(tempo / shown - 1.0) <= 0.04)
+            # Nor is a tempo no further from the one marked than bars of one tempo are from each other.
+            near = apart if all(sure[a:b]) else 0.04
+            same = round(tempo) == shown or abs(tempo / shown - 1.0) <= near
             if not same and a > 0:
                 shown = round(tempo)
                 measures[a].directions.insert(0, (Fraction(0), f"metronome_quarter_{shown}"))
                 marks.append((a, shown))
-            elif slowed:
+            elif slowed and a < closing:
                 measures[a].directions.insert(0, (Fraction(0), "tempo_a_tempo"))  # the tempo it slowed from
             steady_tempo = tempo
             slowed = False
@@ -92,9 +98,44 @@ def mark_tempos(measures: list, starts: list[float], end: float, steady: object 
                 measures[a].directions.insert(0, (Fraction(0), "tempo_rit"))
             slowed = True
         elif slowed and tempo >= 0.96 * steady_tempo:
-            measures[a].directions.insert(0, (Fraction(0), "tempo_a_tempo"))
+            if a < closing:
+                measures[a].directions.insert(0, (Fraction(0), "tempo_a_tempo"))
             slowed = False
     return marks
+
+
+SLOWED = 0.94  # of the tempo of the bars before it: a bar played slower than this is marked as a ritardando
+
+
+def mark_played(measures: list, tempos: list[float]) -> list[tuple[int, int]]:
+    """Tempo marks for playing that keeps no click's time (``steady_beats.follow``); the marks set (bar, tempo).
+
+    Each bar takes a little longer or shorter than the last, and none of that is a change of
+    tempo: one metronome mark stands at the head, the tempo of the opening bars. A bar plainly
+    slower than the eight before it (broadened before a new verse, or at the close) is marked
+    *rit.*, and *a tempo* where the playing is back to what it was. Every bar's own tempo is kept
+    for the sound, so that the score played back keeps the player's time.
+    """
+    for measure in measures:
+        measure.directions = [d for d in measure.directions if not d[1].startswith(("metronome_", "tempo_"))]
+        measure.tempos = []
+    shown = round(float(np.median(tempos[:16])))
+    measures[0].directions.insert(0, (Fraction(0), f"metronome_quarter_{shown}"))
+    slowed_from: float | None = None
+    for k, tempo in enumerate(tempos):
+        measures[k].tempos = [(Fraction(0), tempo)]
+        if k == 0:
+            continue
+        if slowed_from is None:
+            before = float(np.median(tempos[max(0, k - 8) : k]))
+            if tempo < SLOWED * before and k + 1 < len(tempos):
+                measures[k].directions.insert(0, (Fraction(0), "tempo_rit"))
+                slowed_from = before
+        elif tempo >= 0.96 * slowed_from:
+            if k < len(tempos) - 2:  # after that a ritardando is the close of the piece
+                measures[k].directions.insert(0, (Fraction(0), "tempo_a_tempo"))
+            slowed_from = None
+    return [(0, shown)]
 
 
 def main() -> None:
@@ -171,6 +212,8 @@ def main() -> None:
         "notes_on_the_other_staff": plan.shared,
         "let_ring": let_ring,
         "notes_let_ring": plan.rung,
+        "octaves_rolled": plan.rolled,
+        "beats_put_back": plan.beats_put_back,
         "tempo_marks": [{"bar": bar + 1, "quarter": tempo} for bar, tempo in marks or []],
         "steady_beat": {
             "beats_from_the_notes": sum(plan.steady.fitted),
@@ -179,6 +222,7 @@ def main() -> None:
             "bars_as_tracked": plan.steady.tracked_bars,
             "stretches_on_another_beat_than_tracked": plan.steady.rephased,
             "stretches": plan.steady.stretches,
+            "followed": plan.steady.followed,
         }
         if plan.steady is not None
         else None,
