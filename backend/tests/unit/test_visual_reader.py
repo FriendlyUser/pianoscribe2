@@ -78,6 +78,22 @@ def test_every_note_of_a_piece_is_read_with_its_hand_and_timing(read, tmp_path: 
     assert midi.stat().st_size > 0 and len(VisualReading.load(tmp_path / "visual.json").notes) == len(truth)
 
 
+def test_a_filmed_keyboard_with_a_film_behind_the_notes(read) -> None:
+    # Some tutorials film a real keyboard, whose keys do not light and over which the player's
+    # hands move, and play a dimmed film behind the falling notes. However the film changes it is
+    # not a note, and what the hands do to the keys says nothing about the notes.
+    truth = falling(piano_video.from_beats(synth.ode_to_joy(), synth.ODE_BPM))
+    style = Style(width=1920, height=1080, film=True, filmed=True, keys_light=False)
+    reading, lead = read(truth, style)
+    onsets, ends = compare(reading, truth, lead)
+    assert np.abs(onsets).max() < 0.04 and np.abs(ends).max() < 0.05
+    facts = reading.facts
+    assert facts["roll"]["film_behind"] is True
+    assert facts["key_check"]["keys_light"] is False and facts["notes"]["from_lit_keys_only"] == 0
+    assert facts["notes"]["hands_from"] == "colours"
+    assert facts["keyboard"]["lowest"] == "A1" and facts["keyboard"]["highest"] == "A6"
+
+
 def test_notes_that_touch_are_told_apart_by_their_corners(read) -> None:
     # Repeated notes with no gap at all between their bars, on a black key, next to one long
     # note that must stay whole. At 1080p, where the rounded corners of a bar are several pixels.
@@ -126,6 +142,7 @@ def test_long_notes_with_their_names_printed_on_them_stay_whole(read) -> None:
     reading, _ = read(truth, Style(width=1920, height=1080, title_seconds=0.5), audio=False)
     assert sorted(note.pitch for note in reading.notes) == sorted(pitches)
     assert reading.facts["notes"]["separated_by_corners"] == 0
+    assert reading.facts["roll"]["film_behind"] is False  # a still background is not taken for a film
 
 
 def test_a_black_key_between_two_sounding_white_keys(read) -> None:

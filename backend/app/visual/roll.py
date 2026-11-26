@@ -146,6 +146,31 @@ def build_zones(keyboard: Keyboard) -> Zones:
     return Zones(x0=x0, x1=x1, readable=readable, coloured=coloured, **arrays)
 
 
+def _short_gaps(dim: Bool, longest: int, axis: int) -> Bool:
+    """The pixels of ``dim`` in a run along ``axis`` of at most ``longest``, with a pixel that is not dim at both ends."""
+    size = dim.shape[axis]
+    shape = [1] * dim.ndim
+    shape[axis] = size
+    place = np.arange(size, dtype=np.int32).reshape(shape)
+    before = np.maximum.accumulate(np.where(dim, -1, place), axis=axis)
+    after = np.flip(np.minimum.accumulate(np.flip(np.where(dim, size, place), axis=axis), axis=axis), axis=axis)
+    short: Bool = dim & (before >= 0) & (after < size) & (after - before - 1 <= longest)
+    return short
+
+
+def enclosed(dim: Bool, across: int, along: int) -> Bool:
+    """The pixels of ``dim`` ([frames, rows, columns]) in a gap between pixels that are not dim, of
+    at most ``across`` columns side to side or ``along`` rows up and down: a closing of the rest.
+
+    In front of a film, the dark outline of a bar and the dark strokes of the note name printed
+    on it are as dim as the film. Unlike the film they lie in short gaps between bright parts of
+    a bar; the film between two bars side by side is wider than ``across``. A gap is filled whole
+    or not at all, so that the gap between two notes on one key is either kept or closed (and the
+    notes are then told apart by their corners, as when they touch).
+    """
+    return _short_gaps(dim, along, 1) | _short_gaps(dim, across, 2)
+
+
 @dataclass
 class StripStats:
     """What each zone shows in each row of a strip, for a run of frames."""
@@ -158,11 +183,24 @@ class StripStats:
 
 
 def reduce_strip(
-    pixels: NDArray[np.uint8], background: NDArray[np.int16], zones: Zones, *, faint: int = FAINT
+    pixels: NDArray[np.uint8],
+    background: NDArray[np.int16],
+    zones: Zones,
+    *,
+    faint: int = FAINT,
+    ignore: Bool | None = None,
+    covered: Bool | None = None,
 ) -> StripStats:
-    """Per-zone statistics of ``pixels`` ([frames, rows, columns, 3]) against ``background`` ([rows, columns, 3])."""
+    """Per-zone statistics of ``pixels`` ([frames, rows, columns, 3]) against ``background`` ([rows, columns, 3]).
+
+    With a film playing behind the notes, ``ignore`` ([frames, rows, columns]) marks the pixels
+    to take as background whatever they differ by (dimmer than any bar), and ``covered`` those
+    of them to count as covered all the same (the dark outlines inside a bar; see ``enclosed``).
+    """
     frames, rows, width, _ = pixels.shape
     distance = np.abs(pixels.astype(np.int16) - background[None]).max(axis=-1)
+    if ignore is not None:
+        distance[ignore] = 0
     solid = distance > SOLID
     x0, x1 = zones.x0, zones.x1
     some = zones.coloured
@@ -174,7 +212,7 @@ def reduce_strip(
 
     size = (x1 - x0).astype(np.float32)
     solid_count = zone_sums(solid, zones.count)
-    faint_count = zone_sums(distance > faint, some)
+    faint_count = zone_sums((distance > faint) | covered if covered is not None else distance > faint, some)
     present = np.maximum(solid_count[:, :, :some], 1).astype(np.float32)
     colour_sum = zone_sums(pixels * solid[..., None], some)
     grey = pixels.astype(np.uint16).sum(axis=-1) // 3
@@ -384,13 +422,23 @@ def _black_presence(roll: Roll, zones: Zones, index: int, present: Bool) -> tupl
     left_on = present[:, white_left] if white_left >= 0 else np.zeros(rows, dtype=bool)
     right_on = present[:, white_right] if white_right >= 0 else np.zeros(rows, dtype=bool)
     alone = ~left_on & ~right_on
+
+    def own_colour(part: int, white: int) -> Bool:
+        """Rows where ``part``, over the sounding white key ``white``, is one flat colour not that key's."""
+        if part < 0 or white < 0:
+            return np.zeros(rows, dtype=bool)
+        flat = (roll.solid[:, part] >= 0.9) & (roll.spread[:, part] <= UNIFORM)
+        return flat & _differs(roll.colour[:, part], roll.colour[:, zones.core[white]])
+
     # Beside a sounding white key, only the part over the other, silent white key can be this
     # key's own bar; it is asked for the colour of a bar, since the neighbour's dark outline reaches it.
-    far_right = (_zone(roll.solid, right) if right >= 0 else both(roll.solid)) >= COVERED
-    far_left = (_zone(roll.solid, left) if left >= 0 else both(roll.solid)) >= COVERED
+    # A black key that lies nearly all over one neighbour has no part over the other (its zone
+    # there is too narrow to read); beside that neighbour sounding, its bar is told by its colour.
+    far_right = _zone(roll.solid, right) >= COVERED if right >= 0 else own_colour(left, white_left)
+    far_left = _zone(roll.solid, left) >= COVERED if left >= 0 else own_colour(right, white_right)
     state = np.where(alone, both(roll.cover) >= COVERED, np.where(left_on & ~right_on, far_right, far_left))
-    faint_right = (_zone(roll.cover, right) if right >= 0 else both(roll.cover)) >= HOLE_COVERED
-    faint_left = (_zone(roll.cover, left) if left >= 0 else both(roll.cover)) >= HOLE_COVERED
+    faint_right = _zone(roll.cover, right) >= HOLE_COVERED if right >= 0 else own_colour(left, white_left)
+    faint_left = _zone(roll.cover, left) >= HOLE_COVERED if left >= 0 else own_colour(right, white_right)
     closable = np.where(alone, both(roll.cover) >= COVERED, np.where(left_on & ~right_on, faint_right, faint_left))
     # Between two sounding white keys both parts are covered whatever this key does. Its bar is
     # there only if the zone is one flat colour that is neither neighbour's.
