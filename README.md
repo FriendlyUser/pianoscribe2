@@ -60,6 +60,8 @@ the tracker contradicts itself.
 |---|---|
 | Rendered video of a piece with every note known (720p, H.264), reader alone | 62 of 62 notes, each with the right key and hand; onsets within 7 ms, ends within 11 ms |
 | The same video through the whole pipeline, against the piece | overall 1.00: every note in its bar, at its beat, with its length, on the staff of its hand; key, meter and tempo exact |
+| Rendered videos of the same piece as the older players and screen recordings show one: a white glow flooding the keys around every landing note, two and a half keys high; a recording that hangs for half a second and then catches up; and two hands on one key at once (a bar drawn over the one that began before it), reader alone | every note, with its key, hand, start and end (within 30 and 40 ms), read above the glow, through the hang, and beneath the bar drawn over it |
+| A piece in 6/8 whose roll draws its bar lines, heard by the tracker in 3/4, 6/8 and half bars by turns; the bar lines of a rendered video, reader alone | every bar a bar of 6/8 on the drawn lines, the same figure written the same way in each; the lines read to within 30 ms |
 | 200 performances played by hand, written out with a known beat (a tempo that drifts, a bar broadened before a new verse, beats hurried, a melody over held chords; the tracker on the off-beat for eight bars in 40 of them and a beat short in 40 more), score writer alone | every bar line and every note in its place in all 200 (drawn through the same notes, an even beat misplaces bars in 169) |
 | The same piece rendered as a real piano filmed from above at 480p (all 88 keys, 16 pixels to a white key, dim and unevenly spaced as a camera sees them, every note a white block in a glow of one colour, sparks where notes land, the player's hands over the keys), reader alone | 62 of 62 notes, each with the right key and the right hand (told by where the hands are); onsets within 6 ms, ends within 14 ms |
 
@@ -74,7 +76,11 @@ with a few false notes where text and glow come over the notes at the end; and t
 of a real piano filmed from above, whose notes glow in one colour for both hands, read to 1302
 and 1975 notes from one picture of each video's whole roll, with every lit part of that picture
 accounted for by a key, all but 1 and 2 of the 276 and 501 strong attacks in the audio matched by
-a note, and each hand told by where the player's hands are. See also
+a note, and each hand told by where the player's hands are. A fifth, an older screen recording
+that floods its keys with light where notes land, stutters once, draws its bar lines and has both
+hands on one key in places, reads to 1894 notes: every one with its key seen lit, and every start
+and end found again in whole frames of the video read separately. Its score is in the 6/8 its
+bar lines draw, 120 bars, with the four key signatures of the published arrangement. See also
 [Known limitations](ARCHITECTURE.md#known-limitations).
 
 A field test on four more recordings from anime and visual novels (two songs, two piano solos)

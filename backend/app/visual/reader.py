@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -40,6 +40,7 @@ from app.visual.frames import VideoInfo, probe_video, read_strips, sample_frames
 from app.visual.hands import LEFT, RIGHT, UNKNOWN, assign_hands, divide_hands, hands_by_divide, split_by_pitch
 from app.visual.keyboard import Keyboard, KeyboardView, find_keyboard
 from app.visual.roll import (
+    COVERED,
     DEEP_NOTCH,
     FAINT,
     SOLID,
@@ -50,6 +51,8 @@ from app.visual.roll import (
     enclosed,
     faint_notches,
     frame_shifts,
+    jump_shift,
+    lines_across,
     read_bars,
     reduce_strip,
     scroll_speed,
@@ -87,9 +90,10 @@ class VisualNote:
 class VisualReading:
     notes: list[VisualNote]
     facts: dict[str, object]
+    lines: list[float] = field(default_factory=list)  # seconds at which a bar line drawn across the roll lands
 
     def save(self, path: Path) -> None:
-        payload = {"facts": self.facts, "notes": [asdict(note) for note in self.notes]}
+        payload = {"facts": self.facts, "notes": [asdict(note) for note in self.notes], "lines": self.lines}
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(path)
@@ -97,7 +101,11 @@ class VisualReading:
     @classmethod
     def load(cls, path: Path) -> VisualReading:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        return cls([VisualNote(**note) for note in payload["notes"]], payload["facts"])
+        return cls(
+            [VisualNote(**note) for note in payload["notes"]],
+            payload["facts"],
+            [float(t) for t in payload.get("lines") or []],
+        )
 
 
 @dataclass(frozen=True)
@@ -125,8 +133,11 @@ class Layout:
         return (self.band_top + self.band_rows - 1.5) - (self.speed_top + 0.5)
 
 
-def plan_layout(keyboard: Keyboard, fps: float, *, band_rows: int | None = None, film: bool = False) -> Layout:
-    """Where to read: ``film`` when a film plays behind the notes (see ``backdrop_floor``)."""
+def plan_layout(
+    keyboard: Keyboard, fps: float, *, band_rows: int | None = None, film: bool = False, flare: int = 0
+) -> Layout:
+    """Where to read: ``film`` when a film plays behind the notes (see ``backdrop_floor``); ``flare``: the
+    rows above the keyboard that the light of a landing note reaches (see ``flare_reach``)."""
     roll_height = keyboard.top
     period = keyboard.white_width
     # High enough to clear the flare drawn where a note lands, low enough to stay near it: the
@@ -134,6 +145,9 @@ def plan_layout(keyboard: Keyboard, fps: float, *, band_rows: int | None = None,
     # one video seen with a film behind its notes also bursts a flare where a note lands, nearly
     # two white keys up over the neighbouring keys; its notes are read higher.
     lead = max(round((2.4 if film else 1.6) * period), round(0.1 * roll_height))
+    if flare >= lead:
+        # A glow that floods the keys around a landing note higher than that: read clear above it.
+        lead = flare + round(FLARE_CLEAR * period)
     if band_rows is None:
         # Tall enough that no row of the roll slips between two frames unless the
         # whole height is crossed in under a second.
@@ -168,6 +182,77 @@ def roll_background(samples: NDArray[np.uint8], view: KeyboardView, rows: range)
     suspicious = (np.abs(own - pooled[None]) > 40).any(axis=-1)
     own[suspicious] = np.broadcast_to(pooled[None], own.shape)[suspicious]
     return own
+
+
+FLARE = 0.15  # share of the covered keys of a row, beyond the roll's own, that hold no bar: a landing note's light
+FLARE_CLEAR = 0.5  # white keys above the end of that light at which the notes are then read
+FLARE_SEEN = 6  # covered keys (counted row by row) a frame must show at a height to say anything about it
+
+
+def flare_reach(samples: NDArray[np.uint8], view: KeyboardView, zones: Zones) -> int:
+    """Rows above the keyboard up to which the light drawn where a note lands is seen; 0 when none is.
+
+    Most videos burst a little light where a note lands, and the strip the notes are read from
+    lies above it. Some flood the keys around the note with it, a white glow some white keys
+    high: read inside that glow, every key beside a landing note is covered (a note is read
+    there) and a note that has ended is covered still. Such light is told from a bar by what a
+    bar is everywhere else on the roll: one flat colour, of the few the bars have. Row by row
+    from the keyboard up, the keys that are covered without being that (not solidly, or in a
+    colour no bar has higher up) are counted against all the keys that are covered, frame by
+    frame; the light ends where the typical frame shows no more of them than the rest of the
+    roll does.
+    """
+    keyboard = view.keyboard
+    top, period = keyboard.top, keyboard.white_width
+    usable = samples[view.usable]
+    furthest = min(top // 2, round(6 * period))  # as far up as a flare is looked for
+    first = int(0.15 * top)
+    above = top - furthest - first  # rows of the roll further up than that: what bars alone look like
+    if len(usable) < 4 or above < 2 * period:
+        return 0
+    background = roll_background(samples, view, range(first, top))
+    some = zones.coloured
+    covered = np.zeros((len(usable), top - first, some), dtype=bool)
+    solid = np.zeros_like(covered)
+    code = np.zeros(covered.shape, dtype=np.int16)
+    for number, frame in enumerate(usable):  # one at a time: the sums over a whole picture are large
+        stats = reduce_strip(frame[None, first:top], background, zones)
+        covered[number] = stats.cover[0] >= COVERED
+        solid[number] = stats.solid[0, :, :some] >= COVERED
+        level = np.clip(stats.colour[0] / 16.0, 0, 15).astype(np.int16)
+        code[number] = (level[..., 0] << 8) | (level[..., 1] << 4) | level[..., 2]
+    bar = covered & solid
+    # The colours bars have: those of a fair share of the solid keys higher up, in more frames than a caption stays.
+    seen = np.stack([np.bincount(code[n, :above][bar[n, :above]], minlength=4096) for n in range(len(usable))])
+    total = seen.sum(axis=0)
+    known = (total >= 0.002 * max(1, int(total.sum()))) & ((seen > 0).sum(axis=0) >= max(2, round(0.1 * len(usable))))
+    padded = np.pad(known.reshape(16, 16, 16), 1)
+    near = np.zeros((16, 16, 16), dtype=bool)
+    for dr in range(3):
+        for dg in range(3):
+            for db in range(3):
+                near |= padded[dr : dr + 16, dg : dg + 16, db : db + 16]
+    no_bar = covered & ~(solid & near.reshape(-1)[code])
+    shown = covered[:, :above].sum(axis=(1, 2))
+    telling = shown >= 50
+    if telling.sum() < 3:
+        return 0
+    usual = float(np.median(no_bar[:, :above].sum(axis=(1, 2))[telling] / shown[telling]))
+    step = max(1, round(period / 8))
+    reach = 0
+    for up in range(0, furthest, step):
+        rows = slice(top - first - up - step, top - first - up)
+        keys = covered[:, rows].sum(axis=(1, 2))
+        telling = keys >= FLARE_SEEN
+        if telling.sum() < 3:
+            if reach or up > period:
+                break  # nothing lands here often enough to tell
+            continue
+        share = float(np.median(no_bar[:, rows].sum(axis=(1, 2))[telling] / keys[telling]))
+        if share < usual + FLARE:
+            break
+        reach = up + step
+    return reach
 
 
 MOVING = 0.05  # share of a typical frame that changes far from any bar, above which a film plays behind the notes
@@ -235,6 +320,11 @@ class Readings:
     present: NDArray[np.bool_]  # [frames] the keyboard is on screen
     moved: NDArray[np.float32]  # [frames] rows the picture moved since the frame before (NaN: cannot be told)
     gain: NDArray[np.float32]  # [frames] brightness relative to the clean picture (fades)
+    across: NDArray[np.float32]  # [frames, band rows] how far most of each row is from the empty picture (grey levels)
+    # For the few frames after which the picture jumped: the rows above the band, read like it (see roll.unroll).
+    spare: dict[int, tuple[NDArray[np.uint8], ...]]
+    # How far the picture jumped into a frame after standing still, where that is further than ``moved`` can tell.
+    jumped: dict[int, float]
 
 
 def _key_profile(zones: Zones, keyboard: Keyboard) -> NDArray[np.int64]:
@@ -291,8 +381,14 @@ def read_all_frames(
 
     expected = info.frames + 8
     parts: dict[str, list[NDArray[np.generic]]] = {
-        name: [] for name in ("solid", "grey", "cover", "colour", "spread", "upper", "lit", "present", "gain", "moved")
+        name: []
+        for name in ("solid", "grey", "cover", "colour", "spread", "upper", "lit", "present", "gain", "moved", "across")
     }
+    spare: dict[int, tuple[NDArray[np.uint8], ...]] = {}
+    jumped: dict[int, float] = {}
+    last_tall: NDArray[np.uint8] | None = None  # the tall strip of the frame before this run of frames
+    last_moved = float("nan")
+    grey_behind = background[layout.above : tall].astype(np.float32).mean(axis=-1)  # [band rows, columns]
     done = 0
     for chunk in read_strips(video, info, settings, layout.strips):
         frames = len(chunk)
@@ -330,10 +426,41 @@ def read_all_frames(
             covered[:, : layout.band_rows] = inside
         joined = masks if last_mask is None else np.concatenate((last_mask[None], masks))
         moved = frame_shifts(joined, most)
-        parts["moved"].append(moved if last_mask is not None else np.concatenate(([np.nan], moved)).astype(np.float32))
-        last_mask = masks[-1]
+        moved = moved if last_mask is not None else np.concatenate(([np.nan], moved)).astype(np.float32)
+        before = len(joined) - frames  # 1 when ``joined`` begins with the frame before this run
+        for i in range(frames):
+            # A picture that stood still and then moved further than it can be followed from one frame
+            # to the next: a recording that stuttered. How far it jumped is looked for over the whole strip.
+            stood = moved[i - 1] == 0.0 if i > 0 else last_moved == 0.0
+            if stood and np.isnan(moved[i]) and i + before >= 1:
+                jump = jump_shift(joined[i + before - 1], joined[i + before], 0, tall - 4)
+                if not np.isnan(jump):
+                    jumped[done + i] = jump
+            leaps = moved[i] > layout.band_rows - 1.5 or (stood and np.isnan(moved[i]))
+            if floor is None and leaps and len(spare) < SPARES:
+                # Rows will have passed the band unread: they are still above it in the frame before.
+                pixels = chunk[i - 1, : layout.above] if i > 0 else last_tall
+                if pixels is not None:
+                    above = reduce_strip(pixels[None, : layout.above], background[: layout.above], zones)
+                    spare[done + i - 1] = (
+                        np.rint(above.solid[0] * 255).astype(np.uint8),
+                        np.rint(above.grey[0]).astype(np.uint8),
+                        np.rint(above.cover[0] * 255).astype(np.uint8),
+                        np.rint(above.colour[0]).astype(np.uint8),
+                        np.clip(np.rint(above.spread[0]), 0, 255).astype(np.uint8),
+                    )
+        parts["moved"].append(moved)
+        last_mask, last_moved, last_tall = masks[-1], float(moved[-1]), chunk[-1, : layout.above].copy()
         stats = reduce_strip(
             chunk[:, layout.above :], background[layout.above :], zones, ignore=ignore, covered=covered
+        )
+        # What most of each row of the band differs by from the empty picture: a line drawn right across
+        # the roll (a bar line) shifts the whole row, and no note does.
+        band_grey = chunk[:, layout.above : tall].astype(np.float32).mean(axis=-1)
+        parts["across"].append(
+            np.median(band_grey - grey_behind[None], axis=2).astype(np.float32)
+            if floor is None
+            else np.zeros((frames, layout.band_rows), dtype=np.float32)
         )
         band_rows_cut = slice(0, layout.band_rows)
         speed_rows_cut = slice(layout.band_rows, layout.band_rows + SPEED_ROWS)
@@ -365,7 +492,7 @@ def read_all_frames(
     if done == 0:
         raise JobError("decode_failed", "No video frames could be read.")
     joined = {name: np.concatenate(values) for name, values in parts.items()}
-    return Readings(**joined)
+    return Readings(**joined, spare=spare, jumped=jumped)
 
 
 def measure_speed(readings: Readings, zones: Zones, layout: Layout, info: VideoInfo, roll_height: int) -> float:
@@ -392,26 +519,119 @@ def measure_speed(readings: Readings, zones: Zones, layout: Layout, info: VideoI
 
 
 UNEVEN = 0.75  # rows: a picture that moves less evenly than this from frame to frame is a screen recording
+STILL = 0.25  # rows: a picture that moved less than this since the frame before stood still
+SETTLED = 6  # frames of the usual motion after which a stutter is over
+SLOWEST_TOLD = 2.0  # rows a frame: a roll slower than this stands still, to the row, in many an ordinary frame
+SPARES = 400  # frames whose rows above the strip are kept at the most
 
 
-def scroll_positions(
-    readings: Readings, speed: float, fps: float
-) -> tuple[NDArray[np.float64], NDArray[np.float64], bool]:
-    """(shown, even, steady): how far the roll had scrolled in each frame.
+@dataclass
+class Scroll:
+    """How far the roll had scrolled in each frame."""
+
+    shown: NDArray[np.float64]  # [frames] as the picture shows it
+    even: NDArray[np.float64]  # [frames] as it runs with the sound: the unevenness of the recording taken out
+    steady: bool  # the picture moves the same distance every frame (a rendered video, not a screen recording)
+    placed: NDArray[np.bool_]  # [frames] where the picture was is known (False: between two jumps of unknown size)
+    stutters: int = 0  # times the picture stood still and then caught up, or went on from where it stood
+    frames_still: int = 0
+
+
+def _through_stutters(
+    moved: NDArray[np.float32], present: NDArray[np.bool_], speed: float, jumped: dict[int, float]
+) -> Scroll:
+    """The steady line ``speed`` times the frame number, bent wherever the picture stood still.
+
+    A recording of a screen can stutter: one picture stays for some frames, and then the next
+    shows the roll where it has got to meanwhile (the sound never stopped), or carries on from
+    where it stood (the player waited too). Laid along the steady line, the picture that stayed
+    would be written down the roll again and again, and what the jump passed over would be put
+    where it never was. So from a still frame until the picture moves as usual again, each frame
+    is placed by how far the picture is measured to have moved. If that comes to what the steady
+    line makes it (the recording caught up), the roll's clock runs on unbent; if not, the roll
+    waited, and its clock with it. One jump of unknown size is what is missing to catch up; the
+    frames between two such jumps cannot be placed and are left out.
+    """
+    count = len(moved)
+    line = speed * np.arange(count, dtype=np.float64)
+    moved = moved.copy()
+    for frame, rows in jumped.items():
+        moved[frame] = rows
+    measured = present & ~np.isnan(moved)
+    usual = measured & (np.abs(moved - speed) <= max(1.0, 0.25 * speed))
+    still = measured & (moved <= STILL)
+    # Before the roll has ever been seen to move it has not stuttered: it has not begun.
+    begun = int(np.argmax(usual)) if usual.any() else count
+    still[:begun] = False
+    scroll = Scroll(line, line, True, np.ones(count, dtype=bool))
+    if not still.any() or speed < SLOWEST_TOLD:
+        return scroll
+    shown, even = line.copy(), line.copy()
+    behind = 0.0  # rows the roll has fallen behind the steady line for good
+    frame = 0
+    while frame < count:
+        if not still[frame]:
+            shown[frame] = even[frame] = line[frame] - behind
+            frame += 1
+            continue
+        first, quiet, last = frame, 0, frame
+        while last < count and quiet < SETTLED and last - first < 20 * SETTLED + int(still[first:last].sum()):
+            leapt = np.isnan(moved[last]) and last > 0 and still[last - 1]
+            quiet = 0 if (still[last] or leapt or (measured[last] and not usual[last])) else quiet + 1
+            last += 1
+        last -= quiet  # the stutter is frames first .. last - 1
+        steps = np.where(usual[first:last] | ~measured[first:last], speed, moved[first:last]).astype(np.float64)
+        steps[still[first:last]] = 0.0
+        unknown = [
+            n for n in range(last - first) if np.isnan(moved[first + n]) and first + n > 0 and still[first + n - 1]
+        ]
+        net = float(steps.sum()) - speed * (last - first)
+        start = shown[first - 1] if first > 0 else -speed - behind
+        forward = start + np.cumsum(steps)
+        # Caught up: on the steady line again once it is over. What the measured steps leave over
+        # belongs to the jump (the one of unknown size, or else the largest step).
+        backward = (line[last - 1] - behind) - (np.cumsum(steps[::-1])[::-1] - steps)
+        turn, again = (unknown[0], unknown[-1]) if unknown else (int(np.argmax(steps)),) * 2
+        before = forward[turn - 1] if turn > 0 else start
+        # (A jump over nearly the whole strip is measured to a few rows: what it leaves over is not a wait.)
+        stood = speed * float(still[first:last].sum())
+        caught_up = (bool(unknown) or abs(net) <= max(2.0, 0.75 * speed, 0.25 * stood)) and backward[again] >= before
+        if caught_up:
+            shown[first : first + turn] = forward[:turn]
+            shown[first + again : last] = backward[again:]
+            if again > turn:
+                # Between two jumps of unknown size: somewhere between where it stood and where it got to.
+                shown[first + turn : first + again] = np.linspace(before, backward[again], again - turn + 2)[1:-1]
+                scroll.placed[first + turn : first + again] = False
+            even[first:last] = line[first:last] - behind
+        else:
+            # It went on from where it stood: the roll waited, and its clock with it.
+            shown[first:last] = even[first:last] = forward
+            behind -= net
+        scroll.stutters += 1
+        scroll.frames_still += int(still[first:last].sum())
+        frame = last
+    scroll.shown, scroll.even = shown, even
+    return scroll
+
+
+def scroll_positions(readings: Readings, speed: float, fps: float) -> Scroll:
+    """How far the roll had scrolled in each frame.
 
     A video rendered from the notes moves the same distance every frame: ``speed`` times the
-    frame number says it all, exactly. A screen recording repeats and skips frames, so the
-    distance moved is taken as measured, frame by frame. Its roll still runs evenly with
-    the sound, which a running average of the measured positions recovers.
+    frame number says it all, exactly (but for a recording that stutters, see ``_through_stutters``).
+    A screen recording repeats and skips frames, so the distance moved is taken as measured, frame
+    by frame. Its roll still runs evenly with the sound, which a running average of the measured
+    positions recovers.
     """
     count = len(readings.moved)
     measured = readings.moved[readings.present & ~np.isnan(readings.moved)]
     line = speed * np.arange(count, dtype=np.float64)
     if len(measured) < 30:
-        return line, line, True
+        return Scroll(line, line, True, np.ones(count, dtype=bool))
     spread = float(np.median(np.abs(measured - np.median(measured)))) * 1.4826
     if spread < UNEVEN and abs(float(np.median(measured)) - speed) < 0.2 * speed:
-        return line, line, True
+        return _through_stutters(readings.moved, readings.present, speed, readings.jumped)
     moved = np.where(np.isnan(readings.moved) | ~readings.present, speed, readings.moved).astype(np.float64)
     shown = np.cumsum(moved)
     window = max(9, int(round(fps)) | 1)
@@ -423,11 +643,11 @@ def scroll_positions(
         )
     )
     even = np.convolve(padded, np.ones(window) / window, mode="valid")
-    return shown, even, False
+    return Scroll(shown, even, False, np.ones(count, dtype=bool))
 
 
-def unroll_readings(readings: Readings, shown: NDArray[np.float64], even: NDArray[np.float64], layout: Layout) -> Roll:
-    frames = np.flatnonzero(readings.present)
+def unroll_readings(readings: Readings, scroll: Scroll, layout: Layout) -> Roll:
+    frames = np.flatnonzero(readings.present & scroll.placed)
     if len(frames) == 0:
         raise JobError("keyboard_not_found", "The keyboard is never on screen long enough to read notes.")
     return unroll(
@@ -437,9 +657,11 @@ def unroll_readings(readings: Readings, shown: NDArray[np.float64], even: NDArra
         readings.colour[frames],
         readings.spread[frames],
         frames,
-        shown,
-        even,
+        scroll.shown,
+        scroll.even,
         float(layout.lead),
+        across=readings.across[frames],
+        spare=readings.spare,
     )
 
 
@@ -524,7 +746,9 @@ def merge_slivers(bars: list[Bar], shortest: float) -> tuple[list[Bar], int]:
             touching = bar.start - before.end <= 1.5
             if touching and min(bar.end - bar.start, before.end - before.start) < shortest:
                 longer = before if before.end - before.start >= bar.end - bar.start else bar
-                kept[-1] = Bar(before.key, before.start, bar.end, longer.colour, before.joined, longer.doubtful)
+                kept[-1] = Bar(
+                    before.key, before.start, bar.end, longer.colour, before.joined, longer.doubtful, longer.shared
+                )
                 merged += 1
             else:
                 kept.append(bar)
@@ -598,7 +822,7 @@ def split_at_faint_seams(
     for number, bar in enumerate(bars):
         edges = [bar.start, *sorted(cuts.get(number, [])), bar.end]
         for piece, (a, b) in enumerate(zip(edges, edges[1:], strict=False)):
-            out.append(Bar(bar.key, a, b, bar.colour, bar.joined if piece == 0 else True, bar.doubtful))
+            out.append(Bar(bar.key, a, b, bar.colour, bar.joined if piece == 0 else True, bar.doubtful, bar.shared))
     return out, signs
 
 
@@ -666,6 +890,27 @@ def check_against_keys(bars: list[Bar], roll: Roll, readings: Readings) -> KeyCh
             if b - a >= 3:
                 unexplained.append((key, a, b))
     return KeyCheck(shift, len(differences), confirmed, unexplained, keys_light=True)
+
+
+GREY = 25.0  # largest difference between the channels of a colour that is grey
+COLOURED = 0.98  # share of the bars whose keys light that must be clearly coloured for a grey piece to be none
+
+
+def no_bars_colour(bars: list[Bar], check: KeyCheck) -> list[bool]:
+    """Which of ``bars`` are no bars: grey where the bars are coloured, and their key never lit.
+
+    A roll may print other things than notes down its side: the numbers of the measures, in grey,
+    over the lowest keys. A stroke of a digit covers a key's zone for a few rows as a bar would.
+    Two things tell it from one, and both must: the key under it does not light, and it has no
+    colour in a video whose bars all have one.
+    """
+    if not check.keys_light or not bars:
+        return [False] * len(bars)
+    chroma = np.array([max(bar.colour) - min(bar.colour) for bar in bars])
+    lit = check.confirmed
+    if lit.sum() < 20 or float((chroma[lit] >= 2 * GREY).mean()) < COLOURED:
+        return [False] * len(bars)
+    return [bool(c < GREY and not ok) for c, ok in zip(chroma, lit, strict=True)]
 
 
 TWO_HANDS = 0.3  # share of the frames in which skin shows on both sides of the divide for the hands to be read
@@ -943,7 +1188,9 @@ def read_video(
         return _read_stacked(video, settings, info, samples, view, audio, report)
     zones = build_zones(keyboard)
     floor = backdrop_floor(samples, view)
-    layout = plan_layout(keyboard, info.fps, film=floor is not None)
+    # (In front of a film every colour is seen everywhere: the flare of such a video is allowed for as it is.)
+    flare = flare_reach(samples, view, zones) if floor is None else 0
+    layout = plan_layout(keyboard, info.fps, film=floor is not None, flare=flare)
     readings = read_all_frames(
         video, info, settings, samples, view, zones, layout, lambda f, m: report(0.05 + 0.75 * f, m), floor=floor
     )
@@ -953,7 +1200,11 @@ def read_video(
     if fastest > layout.band_rows - 1:
         # The notes fall further in a frame than the strip is tall: rows would slip between frames. Read again, taller.
         layout = plan_layout(
-            keyboard, info.fps, band_rows=int(np.ceil(max(2 * speed, fastest + 2))) + 2, film=floor is not None
+            keyboard,
+            info.fps,
+            band_rows=int(np.ceil(max(2 * speed, fastest + 2))) + 2,
+            film=floor is not None,
+            flare=flare,
         )
         readings = read_all_frames(
             video, info, settings, samples, view, zones, layout, lambda f, m: report(0.05 + 0.75 * f, m), floor=floor
@@ -961,8 +1212,9 @@ def read_video(
         speed = measure_speed(readings, zones, layout, info, keyboard.top)
     del samples
     report(0.82, "Measuring the notes")
-    shown, even, steady = scroll_positions(readings, speed, info.fps)
-    roll = unroll_readings(readings, shown, even, layout)
+    scroll = scroll_positions(readings, speed, info.fps)
+    steady = scroll.steady
+    roll = unroll_readings(readings, scroll, layout)
     least_rows = max(3, int(round(0.02 * info.fps * speed)))  # nothing shorter than a fiftieth of a second
     bars, slivers = merge_slivers(read_bars(roll, zones, keyboard, least_rows=least_rows), SLIVER * info.fps * speed)
     faint_pieces = without_a_bars_colour(bars, roll, zones, keyboard)
@@ -986,6 +1238,10 @@ def read_video(
             "onto the keys.",
         )
     check = check_against_keys(bars, roll, readings)
+    strays = no_bars_colour(bars, check)
+    if any(strays):
+        bars = [bar for bar, stray in zip(bars, strays, strict=True) if not stray]
+        check.confirmed = check.confirmed[~np.array(strays)]
 
     keys = keyboard.keys
     hands = assign_hands(
@@ -1072,6 +1328,12 @@ def read_video(
     notes.sort(key=lambda note: (note.start, note.pitch))
     by_hand = {name: sum(note.hand == name for note in notes) for name in (RIGHT, LEFT, UNKNOWN)}
     present = readings.present
+    # The bar lines the roll draws across itself land as the bars do, and are timed as they are.
+    drawn = lines_across(roll, max(5, round(0.12 * keyboard.white_width)))
+    lines = [
+        round(float(roll.clock_of(row + early)) / info.fps + shift_seconds, 4) for row in drawn if row + early >= 0
+    ]
+    apart = np.diff(lines)
     facts: dict[str, object] = {
         "video": {
             "width": info.source_width,
@@ -1095,6 +1357,12 @@ def read_video(
             "seconds_on_screen": round(keyboard.top / (speed * info.fps), 2),
             "film_behind": floor is not None,
             "bar_brightness": floor,
+            "landing_light_rows": flare,
+            "read_rows_above_keys": layout.lead,
+            "stutters": scroll.stutters,
+            "frames_still": scroll.frames_still,
+            "rows_read_above_the_strip": roll.filled,
+            "rows_never_shown": int((~roll.seen).sum()),
             "keyboard_shown": round(float(present.mean()), 4),
         },
         "notes": {
@@ -1103,12 +1371,14 @@ def read_video(
             "left_hand": by_hand[LEFT],
             "hand_unknown": by_hand[UNKNOWN],
             "hands_from": hands_from,
-            "separated_by_corners": sum(bar.joined for bar in bars),
+            "separated_by_corners": sum(bar.joined and not bar.shared for bar in bars),
+            "two_hands_on_one_key": sum(bar.shared for bar in bars),
             "between_two_sounding_keys": sum(bar.doubtful for bar in bars),
             "from_lit_keys_only": recovered,
             "overlay_bars_dropped": overlays,
             "slivers_joined": slivers,
             "faint_pieces_dropped": sum(faint_pieces),
+            "grey_pieces_dropped": sum(strays),
             "separated_at_faint_seams": faint,
             "let_ring": _let_ring(heard),
         },
@@ -1122,9 +1392,10 @@ def read_video(
         },
         "audio_offset": offset_fact,
         "audio_check": heard,
+        "bar_lines": {"drawn": len(lines), "seconds_apart": round(float(np.median(apart)), 4) if len(apart) else None},
     }
     log.info("visual.read", **{k: v for k, v in facts.items() if k in ("notes", "key_check", "octave", "roll")})
-    return VisualReading(notes, facts)
+    return VisualReading(notes, facts, lines)
 
 
 def write_midi(notes: list[VisualNote], path: Path, *, velocity: int = 80) -> Path:

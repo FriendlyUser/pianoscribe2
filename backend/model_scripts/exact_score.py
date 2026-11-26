@@ -31,7 +31,7 @@ import math
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from steady_beats import PRECISE, Steady, steady_beats
+from steady_beats import PRECISE, Steady, drawn_beats, steady_beats
 
 TICKS = 12  # per beat
 # Grids a hand's notes may lie on within one beat, simplest first (in ticks).
@@ -194,6 +194,44 @@ def gather_rolled(struck: list[float], notes: list[dict], beats: list[float]) ->
                     rolled += 1
                 run = [i]
     return rolled
+
+
+SPREAD = 1.5  # of a thirty-second note: the notes of a spread chord follow each other more closely than this
+
+
+def gather_spread(
+    onsets: list[float], notes: list[dict], beats: list[float], unit: int, within: float
+) -> list[list[int]]:
+    """Give the notes of each spread chord its first note's moment (``onsets`` is changed in place); returns the chords.
+
+    A roll drawn from a score plays the chords the score marks with an arpeggio sign as notation
+    software does: their notes begin a few hundredths of a second apart, sooner than a sixteenth
+    follows another, and are then held together. Written as they begin they would be a run of
+    tied sixty-fourths before every such chord. Notes of one hand that follow each other that
+    closely, each of them still sounding well after the last has begun, are one chord, struck
+    where its first note is: on the beat. (Notes that give way to one another are a run or an
+    ornament, however fast, and stay as they are.)
+    """
+    spread: list[list[int]] = []
+    for left in (True, False):
+        members = sorted((i for i, n in enumerate(notes) if (n["hand"] == "left") == left), key=lambda i: onsets[i])
+        run: list[int] = []
+        for i in [*members, -1]:
+            if run and i >= 0:
+                k = min(max(math.floor(beat_position(onsets[run[-1]], beats)), 0), len(beats) - 2)
+                if onsets[i] - onsets[run[-1]] <= SPREAD * (beats[k + 1] - beats[k]) * unit / 32.0:
+                    run.append(i)
+                    continue
+            if len(run) > 1:
+                first, last = onsets[run[0]], onsets[run[-1]]
+                pitches = [int(notes[j]["pitch"]) for j in run]
+                held = all(float(notes[j]["end"]) >= last + (last - first) for j in run)
+                if last - first > within and held and len(set(pitches)) == len(pitches):
+                    for j in run:
+                        onsets[j] = first
+                    spread.append(list(run))
+            run = [i]
+    return spread
 
 
 STRAIGHT = (0, 3, 6, 9)  # quarters of the beat, in ticks
@@ -613,6 +651,11 @@ def _split_plain(start: int, end: int, bar: Bar) -> list[Value]:
     whole = (offset == 3 and length in (6, 9)) or (offset == 6 and length == TICKS and strongest <= 3)
     if plain is not None and bar.unit == 4 and whole:
         return [Value(start, length, plain[0], plain[1])]
+    # In 6/8 and its kind the beat is three eighths, and two notes may share it evenly: the second
+    # of two dotted eighths is written whole, as is the dotted eighth after a sixteenth.
+    compound = bar.unit >= 8 and bar.beats % 3 == 0 and bar.beats > 3
+    if plain is not None and compound and length == 18 and (start - bar.start) % (3 * TICKS) in (6, 18):
+        return [Value(start, length, plain[0], plain[1])]
     if not inside:
         return [Value(start, length, "16th" if bar.unit == 4 else "32nd")]
     # Cut at the strongest place inside; of several equally strong, the one that leaves the longest plain start.
@@ -683,6 +726,7 @@ class Written:
     triplet: bool
     pitches: tuple[int, ...]
     tied: bool  # tied to the next value of the same note
+    spread: bool = False  # the chord is spread out, its notes one after the other (an arpeggio sign)
 
 
 @dataclass
@@ -698,18 +742,25 @@ class Plan:
     shared: int = 0  # notes written on the other hand's staff, their chord being too wide for one hand
     rung: int = 0  # chords written out beyond the release of their keys, the pedal holding them
     rolled: int = 0  # octaves rolled by the player's hand, written as one chord
+    spread: int = 0  # chords a machine spreads out (an arpeggio sign in its score), written as one chord
     beats_put_back: int = 0  # beats put in where the tracker counted every other one (see ``keep_counting``)
     starts: dict[int, int] = field(default_factory=dict)  # index of each note -> the tick it is written on
     voices: dict[int, int] = field(default_factory=dict)  # staff -> voices used
 
 
-def plan_score(notes: list[dict], annotation: dict, *, let_ring: bool = False) -> Plan:
+def plan_score(
+    notes: list[dict], annotation: dict, *, let_ring: bool = False, lines: list[float] | None = None
+) -> Plan:
     """Lay ``notes`` (``start``, ``end`` in seconds, ``pitch``, ``hand``) out on the tracker's beats and bars.
 
     ``let_ring``: the notes ring on after their keys are released (see ``settle_lengths``).
+    ``lines``: when the bar lines drawn across the roll land (seconds), if it draws any: they are
+    the bars where they hold (``steady_beats.drawn_beats``).
     """
     onsets = [float(n["start"]) for n in notes]
-    steady = steady_beats(annotation, onsets)
+    steady = drawn_beats(annotation, onsets, lines) if lines else None
+    if steady is None:
+        steady = steady_beats(annotation, onsets)
     beats = snap_beats(steady.beats, onsets, exact=steady.fitted)
     moved = sum(abs(a - b) > 1e-6 for a, b in zip(steady.beats, beats, strict=True))
     beats, put_back, bars = keep_counting(beats, steady.fitted, steady.bars, max(onsets, default=0.0))
@@ -717,6 +768,12 @@ def plan_score(notes: list[dict], annotation: dict, *, let_ring: bool = False) -
     for index in put_back:
         how_exactly.insert(index, float("inf"))
     annotation = {**annotation, "beats": beats, "bars": bars}
+    spread: list[list[int]] = []
+    if steady.followed is None and bars:
+        # A machine plays the roll: a chord whose notes begin one after the other is spread on purpose.
+        units = [int(bar.get("unit") or 4) for bar in bars]
+        onsets = list(onsets)
+        spread = gather_spread(onsets, notes, beats, max(set(units), key=units.count), steady.within)
     # Notes struck together are written together: each takes the time of its moment.
     struck = list(onsets)
     group: list[int] = []
@@ -758,6 +815,12 @@ def plan_score(notes: list[dict], annotation: dict, *, let_ring: bool = False) -
             for i, s in zip(members, starts, strict=True)
         ]
         ticked[staff] = [(s, e, int(notes[i]["pitch"])) for s, e, i in zip(starts, ends, members, strict=True)]
+    # A roll that draws its bar lines is made from a score: the chords it spreads are the ones marked so there.
+    marked = (
+        {(written_on[i], int(notes[i]["pitch"])) for chord in spread for i in chord}
+        if steady.drawn is not None
+        else set()
+    )
     shared = share_wide_chords(ticked)
     triple = {staff: {s // TICKS for s, _, _ in members if s % 3 != 0} for staff, members in ticked.items()}
     every = [item for members in ticked.values() for item in members]
@@ -767,6 +830,7 @@ def plan_score(notes: list[dict], annotation: dict, *, let_ring: bool = False) -
     plan.steady = steady
     plan.shared = shared
     plan.rolled = rolled
+    plan.spread = len(spread)
     plan.starts = written_on
     plan.beats_put_back = len(put_back)
     chords_by_staff: dict[int, list[list[Chord]]] = {}
@@ -804,6 +868,9 @@ def plan_score(notes: list[dict], annotation: dict, *, let_ring: bool = False) -
                             triplet=value.triplet,
                             pitches=tuple(chord.pitches),
                             tied=position < len(values) - 1,
+                            spread=position == 0
+                            and len(chord.pitches) > 1
+                            and any((chord.start, pitch) in marked for pitch in chord.pitches),
                         )
                     )
     plan.written.sort(key=lambda w: (w.bar, w.onset, w.staff, w.voice))

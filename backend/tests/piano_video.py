@@ -63,6 +63,9 @@ class Style:
     keys_light: bool = True
     film: bool = False  # a dimmed film plays behind the notes instead of the still background
     afterglow: bool = False  # a screen recording's smear: a faint band a few rows past the end of every bar
+    halo: float = 0.0  # white keys: how far a white glow floods the keys around a landing note, and above them
+    bar_seconds: float = 0.0  # a faint line right across the roll at the beginning of every bar this long
+    stutter: tuple[float, ...] = ()  # (at, for) seconds: the picture stands still, then shows where the roll has got to
     filmed: bool = False  # a filmed keyboard: shaded keys that do not light, and the player's hands over them
     glow: bool = False  # both hands' notes alike: white blocks with round ends, in a glow of ``right``
     sparks: bool = False  # sparks rise from where the notes land
@@ -136,6 +139,11 @@ def _roll(notes: list[VideoNote], style: Style, layout: _Layout, speed: float, s
             draw.line([(round(x0), 0), (round(x0), height)], fill=(26, 26, 26), width=1)
     if style.glow:
         return _glowing_roll(notes, style, layout, speed, height)
+    if style.bar_seconds:
+        line = tuple(b + 12 for b in style.background)
+        for bar in range(int(seconds / style.bar_seconds) + 1):
+            row = round(height - 1 - bar * style.bar_seconds * speed)
+            draw.line([(0, row), (style.width, row)], fill=line, width=2)
     radius = max(2, round(0.15 * layout.key_width))
     font = _font(max(8, round(0.62 * layout.key_width)))
     small = _font(max(7, round(0.42 * layout.key_width)))
@@ -386,6 +394,8 @@ def render(
         encoder.stdin.write(card.tobytes())
     for index in range(frames):
         now = index / style.fps
+        if style.stutter and style.stutter[0] <= now < style.stutter[0] + style.stutter[1]:
+            now = style.stutter[0]  # the recording hangs: the same picture again, the sound running on
         offset = roll.shape[0] - top - round(now * speed)
         frame = np.empty((style.height, style.width, 3), dtype=np.uint8)
         frame[:top] = roll[offset : offset + top]
@@ -407,6 +417,20 @@ def render(
                 centre, reach = (x0 + x1) / 2, 0.7 * layout.key_width
                 draw.ellipse([centre - reach, top - 0.8 * reach, centre + reach, top + 0.2 * reach], fill=255)
             glow = glow.filter(ImageFilter.GaussianBlur(0.12 * layout.key_width))
+            mask = np.asarray(glow, dtype=np.float32)[..., None] / 255.0
+            frame = (frame * (1 - mask) + 255.0 * mask).astype(np.uint8)
+        if style.halo and sounding:
+            # The light of the older players: a soft white disc around every landing note, over its neighbours too.
+            glow = Image.new("L", (style.width, style.height), 0)
+            draw = ImageDraw.Draw(glow)
+            reach = style.halo * layout.key_width
+            for note in sounding:
+                x0, x1 = _span(note.pitch, layout)
+                centre = (x0 + x1) / 2
+                draw.ellipse(
+                    [centre - 0.6 * reach, top - 0.8 * reach, centre + 0.6 * reach, top + 0.3 * reach], fill=230
+                )
+            glow = glow.filter(ImageFilter.GaussianBlur(0.12 * reach))
             mask = np.asarray(glow, dtype=np.float32)[..., None] / 255.0
             frame = (frame * (1 - mask) + 255.0 * mask).astype(np.uint8)
         if index < style.fade_frames:

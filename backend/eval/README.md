@@ -125,10 +125,10 @@ unchanged at 929.
 The first video's score had a change of key it did not need. The key tracker hears its bridge
 (bars 74 to 86) in G sharp minor, between two stretches of C sharp minor, and the score went to
 five sharps and back. The 96 notes of those bars have an A natural three times and an A sharp
-never: every one is in E major, and in five sharps three took an accidental. A change of key is
-now written only if the notes from there to the next change fit the new signature at least as
-well as the one in force (`notate_exact.signatures_the_notes_bear_out`); the score stays in four
-sharps and has no accidental left. The change of key in the hand-played filmed video, a tone up
+never: every one is in E major, and in five sharps three took an accidental. Key signatures
+are now the ones that leave the fewest notes outside their scales, a change of signature
+counting as twelve such notes (`notate_exact.signatures_by_the_notes`, see the fifth video
+below); the score stays in four sharps and has no accidental left. The change of key in the hand-played filmed video, a tone up
 for the last chorus, is one its notes go along with (none outside B flat major after it, 96
 outside A flat major), and stands.
 
@@ -244,6 +244,65 @@ crossed or shared a chord; and, in the first, that the beat heard is the beat me
 tracker is of one mind: the three notes that close each chorus are written on the third beat,
 after it, and before the bar line in the two bars the player broadens, and after the third beat,
 on the fourth, and on the next bar line at the very end, where nothing follows them to say.
+
+### An older screen recording: light over the keys, bar lines, two hands on one key
+
+A fifth video: a screen recording of an older player, 720p at 29.97 frames a second, 4:27, all 88
+keys drawn along the bottom with no names on them, no names on the bars either. As the reader
+stood it wrote 2857 notes on 13 pages in five time signatures. What was wrong, and what is read
+now:
+
+| | Before | Now |
+|---|---|---|
+| Notes read | 2858, of which 1004 grey and 839 with their key never lit | 1894 (right hand 886, left 1008), every one with its key seen lit |
+| The light where notes land | the strip lay inside it: every key beside a landing note covered, 1139 slivers joined, 2180 faint pieces dropped | measured at 63 rows (2.5 white keys); read 75 rows up, above it |
+| Octave | "middle of the keyboard", confirmed by the audio by 0.56 to 0.54 | the full keyboard (52 white keys from an A; the picture cuts three pixels off each end key) |
+| The picture hangs once, for 15 frames near 2:52, and jumps 67 rows | a note lost, a chord 92 ms late | the frames placed as the picture moved, 56 rows read above the strip in the last frame before the jump; all four notes within 8 ms of where a clean frame shows them |
+| Two hands on one key (22 stretches) | cut once: a melody note lost, others cut at the wrong place or given to the wrong hand | each note of each hand, eight more than before |
+| The numbers of the bars, printed in grey over the lowest keys | one read as a note on A0 | dropped: grey among coloured bars, its key never lit |
+| Bar lines | the tracker's: 122 bars in 3/4, 3/8, 6/8, 6/4 and 1/4 | the 121 the roll draws, 2.187 s apart: 120 bars of 6/8, dotted quarter = 55 |
+| Key signatures | F, C from bar 35, F from bar 51 (152 accidentals) | F, D from bar 23, C from bar 31, F from bar 59 (97): the key regions of the published arrangement |
+| Chords the roll spreads | written as runs of tied thirty-seconds | 10 chords, each on its beat with an arpeggio sign |
+| Score | 13 pages, 1914 ties, two voices to a staff throughout | 5 pages, 86 ties, one voice to a staff |
+
+How the new reading was checked:
+
+- **The keys.** 1894 of 1894 bars have their key lit while they sound. One key is lit once with
+  no bar.
+- **Whole frames.** The reader reads a thin strip of every frame. One whole frame is an exact
+  picture of three seconds of the roll, so every sixtieth frame (134 of them) was read whole with
+  the same bar logic but other pixels, each bar's lower and upper edge being a note's start and
+  end. Of the 2551 starts those frames show, 2551 are in the reading within 70 ms (median
+  difference 3.5 ms, 99% within 42 ms: a frame of the recording, which drops one in a thousand);
+  of 2576 ends, 2575. Every note of the reading has its start in some frame, and all but one its
+  end. The two ends that differ are of notes that end beneath a bar of the other hand, where the
+  end cannot be seen and the two readings guess it from different chords.
+- **The audio.** The notes lie within 21 ms of the sound all the way through (every ten seconds:
+  -21 to +15 ms). Of the 311 attacks in the audio while notes are played (jumps in its rise),
+  301 have a note onset within 60 ms and 310 within 150 ms. The other ten all lie in the loudest
+  half minute (3:18 to 3:44), each about a thirty-second from the notes around it, and no whole
+  frame shows a bar beginning at any of them.
+- **The bar lines.** 120 of the 121 drawn lines have a tracked bar line within 15% of a bar, and
+  94% of the tracked bars are as long as the bar drawn where they lie. With the lines as the
+  grid, 1827 of the first reading's 1885 onsets lay within 20 ms of a thirty-second of the bar
+  (the rest are notes of spread chords and of the frames around the hang).
+- **The score.** Every note read is in it and nothing else (1.0 and 1.0).
+
+What these checks cannot show. Where one hand's note ends beneath the other's bar, how long it
+lasted (it is given the length of the chord struck with it, or ends where it was covered). A
+note of one hand that lies wholly beneath a bar of the other, begun at the same moment and no
+longer, cannot be seen at all, by anyone. Chords spread by less than a frame and a half are
+written as plain chords, without the sign: at this frame rate a spread that small is not told
+from the two rows by which a black key's bar is read late. And nothing here is a comparison with
+the published arrangement note for note, which was not at hand; its 119 bars, 6/8 and four key
+regions agree with what was read (the video ends on one bar more, a chord held to the end).
+
+The other videos, read again with all of this in place: the second reads exactly as before (the
+same 1414 notes to the tenth of a millisecond), and its 72 faint bar lines, too few to rely on,
+fall on its score's bar lines to within 25 ms. The first has a hang of its own, two frames at
+1:50 followed by a jump of fifteen rows; one note there now starts 20 ms earlier, nothing else
+moved, and its score is note for note the one it was. The two filmed videos are read another way
+and are untouched. All four scores are unchanged.
 
 ## Score references
 

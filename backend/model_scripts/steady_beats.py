@@ -376,6 +376,7 @@ class Steady:
     within: float = 0.012  # seconds within which onsets are one moment (see ``moments``)
     rephased: int = 0  # stretches whose beat is another quarter of their grid than the tracked beats within them mark
     followed: dict | None = None  # the notes keep no click's time: the beat heard was followed (see ``follow``)
+    drawn: dict | None = None  # the bar lines are the ones the roll itself draws (see ``drawn_beats``)
 
 
 def _join(a: Stretch, b: Stretch, times: np.ndarray) -> tuple[str, tuple[int, ...]]:
@@ -720,6 +721,171 @@ def follow(
         within,
         0,
         {"tempo_wanders": None if drift is None else round(drift, 4), "beats_heard_astray": strays, **mended},
+    )
+
+
+LINES_MISSED = 0.1  # share of a roll's bar lines that may have to be put in where none was read
+
+
+def _usual_length(lengths: np.ndarray, k: int) -> float:
+    """How long the bars around bar ``k`` are drawn: the median of the six nearest that are about the common length."""
+    typical = float(np.median(lengths))
+    plain = [i for i in range(len(lengths)) if i != k and 0.7 <= lengths[i] / typical <= 1.4]
+    near = sorted(plain, key=lambda i: abs(i - k))[:6]
+    return float(np.median(lengths[near])) if near else typical
+
+
+def _whole_lines(read: np.ndarray) -> tuple[np.ndarray, int] | None:
+    """The bar lines read off a roll (seconds, in order) made whole, and how many were put in; None if too many.
+
+    A faint line is not read everywhere (a video's compression takes some), and one may be read
+    twice. Two readings a fraction of a bar apart are one line. Where two lines are a whole
+    number of bars apart, as the bars around them go, the lines between were missed and are put
+    in evenly. A roll with more than a tenth of its lines missing is not relied on.
+    """
+    rough = float(np.median(np.diff(read)))
+    at = [float(read[0])]
+    for time in read[1:]:
+        if time - at[-1] < 0.25 * rough:
+            at[-1] = (at[-1] + float(time)) / 2.0
+        else:
+            at.append(float(time))
+    if len(at) < 4:
+        return None
+    lengths = np.diff(np.asarray(at))
+    out = [at[0]]
+    put_in = 0
+    for k, (a, b) in enumerate(zip(at, at[1:], strict=False)):
+        ratio = (b - a) / _usual_length(lengths, k)
+        bars = round(ratio)
+        if bars >= 2 and abs(ratio - bars) <= 0.06 * bars:
+            out += [a + (b - a) * n / bars for n in range(1, bars)]
+            put_in += bars - 1
+        out.append(b)
+    if put_in > LINES_MISSED * len(out):
+        return None
+    return np.asarray(out), put_in
+
+
+DRAWN_NEAR = 0.15  # of a bar: how near a drawn bar line a tracked one must lie to be that line
+DRAWN_HEARD = 0.6  # share of the drawn bar lines that must be heard, or of the tracked bars that must be as long
+SAME_LENGTH = 0.06  # relative difference under which a tracked bar is as long as a drawn one
+DRAWN_OFF = 0.06  # seconds: further than this from the notes, bar lines were not read off the roll the notes are on
+
+
+def drawn_beats(annotation: dict, onsets: list[float], lines: list[float]) -> Steady | None:
+    """The beats and bar lines of a roll that draws its bar lines across itself; None if it draws none that hold.
+
+    A roll made from a score often shows the score's bars: a thin line right across it where
+    each begins, read to the row like the notes (``app.visual.roll.lines_across``). Where those
+    are the music's own bars nothing heard can better them. The tracker's bar lines waver, and
+    its count of beats to the bar changes with what it hears: written on them, a piece in one
+    metre throughout comes out in four.
+
+    They are the music's own when they are heard: most of them have a tracked bar line on them,
+    or most tracked bars are as long as the bar drawn where they lie. (A roll made from a file
+    that counts four to the bar whatever the music does has neither.) The metre is the one most
+    tracked bars of that length have, and every drawn bar is divided evenly into its beats. One
+    thing is taken from the notes: how far a bar line is drawn, on the roll, from where a note
+    struck on it begins. That is a matter of how each is read, some rows, the same everywhere.
+    """
+    tracked = sorted((dict(b) for b in annotation.get("bars") or []), key=lambda b: float(b["start"]))
+    read = np.unique(np.asarray([float(t) for t in lines], dtype=np.float64))
+    if len(read) < 4 or len(tracked) < 3 or not onsets:
+        return None
+    whole = _whole_lines(read)
+    if whole is None:
+        return None
+    at, put_in = whole
+    lengths = np.diff(at)
+    typical = float(np.median(lengths))
+    starts = np.array([float(b["start"]) for b in tracked])
+    struck = np.asarray(sorted(float(t) for t in onsets))
+
+    def drawn_length(time: float) -> float:
+        return float(lengths[int(np.clip(np.searchsorted(at, time, side="right") - 1, 0, len(lengths) - 1))])
+
+    within = [float(t) for t in at if starts[0] - 0.5 * typical <= t <= starts[-1] + 0.5 * typical]
+    if len(within) < 4:
+        return None
+    heard = float(np.mean([np.min(np.abs(starts - t)) <= DRAWN_NEAR * drawn_length(t) for t in within]))
+    alike = [
+        abs(float(b - a) / drawn_length((a + b) / 2.0) - 1.0) <= SAME_LENGTH
+        for a, b in zip(starts, starts[1:], strict=False)
+        if at[0] <= (a + b) / 2.0 <= at[-1]
+    ]
+    if max(heard, float(np.mean(alike)) if alike else 0.0) < DRAWN_HEARD:
+        return None
+    kinds: dict[tuple[int, int], int] = {}
+    for bar, a, b in zip(tracked, starts, starts[1:], strict=False):
+        if at[0] <= (a + b) / 2.0 <= at[-1] and abs(float(b - a) / drawn_length((a + b) / 2.0) - 1.0) <= SAME_LENGTH:
+            kind = (int(bar.get("beats") or 4), int(bar.get("unit") or 4))
+            kinds[kind] = kinds.get(kind, 0) + 1
+    if not kinds:
+        return None
+    count, unit = max(kinds, key=lambda kind: kinds[kind])
+
+    beats: list[float] = []
+    bars: list[dict] = []
+    for k, (start, length) in enumerate(zip(at[:-1], lengths, strict=True)):
+        # A bar drawn longer or shorter than those around it is played slower or faster, or has
+        # another count of beats: whichever puts its notes on the beat.
+        ratio = float(length) / _usual_length(lengths, k)
+        own = count
+        other = max(1, round(count * ratio))
+        if other != count and abs(ratio - 1.0) > 0.12:
+            inside = (struck[(struck >= start) & (struck < start + length)] - start) / length
+
+            def on_the_beat(beats_in_bar: int, inside: np.ndarray = inside) -> float:
+                return float(np.abs(np.exp(2j * np.pi * inside * beats_in_bar * STEPS).mean())) if len(inside) else 0.0
+
+            if len(inside) == 0 or on_the_beat(other) > on_the_beat(count) + 0.1:
+                own = other
+        bars.append({"start": float(start), "beats": own, "unit": unit, "meter": f"{own}/{unit}"})
+        beats += [float(start + length * n / own) for n in range(own)]
+    beats.append(float(at[-1]))
+    bars.append({"start": float(at[-1]), "beats": count, "unit": unit, "meter": f"{count}/{unit}"})
+
+    # How far the lines are drawn from the notes struck on them: the place of the onsets on quarters of the beat.
+    grid = np.asarray(beats)
+    times = np.asarray(sorted(float(t) for t in onsets))
+    times = times[(times >= grid[0]) & (times <= grid[-1])]
+    if len(times) < LEAST_ONSETS:
+        return None
+    index = np.clip(np.searchsorted(grid, times, side="right") - 1, 0, len(grid) - 2)
+    step = (grid[index + 1] - grid[index]) / STEPS
+    turn = (times - grid[index]) / step  # in quarters of the beat
+    phase = float(np.angle(np.exp(2j * np.pi * turn).mean()) / (2.0 * np.pi))
+    off = ((turn - phase + 0.5) % 1.0 - 0.5 + phase) * step  # seconds from the nearest quarter, about the usual
+    shift = float(np.median(off))
+    if abs(shift) > DRAWN_OFF:
+        return None
+    left = off - shift
+    close = np.abs(left) <= 0.3 * float(np.median(step))
+    scatter = float(np.sqrt((left[close] ** 2).mean())) if close.any() else float("inf")
+    beats = [beat + shift for beat in beats]
+    bars = [{**bar, "start": float(bar["start"]) + shift} for bar in bars]
+    return Steady(
+        beats,
+        [True] * len(beats),
+        [scatter] * len(beats),
+        bars,
+        [],
+        len(bars),
+        0,
+        COARSE_MOMENT if scatter > PRECISE else 0.012,
+        0,
+        None,
+        {
+            "bar_lines": len(at),
+            "bar_lines_put_in": put_in,
+            "heard_as_bar_lines": round(heard, 3),
+            "tracked_bars_as_long": round(float(np.mean(alike)), 3) if alike else None,
+            "meter": f"{count}/{unit}",
+            "bars_of_another_length": int(sum(bar["beats"] != count for bar in bars)),
+            "lines_from_the_notes_ms": round(1000.0 * shift, 1),
+            "scatter_ms": round(1000.0 * scatter, 2),
+        },
     )
 
 

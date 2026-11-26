@@ -287,6 +287,30 @@ def frame_shifts(masks: Bool, most: int) -> Float:
     return np.where(clear, moved, np.nan).astype(np.float32)
 
 
+def jump_shift(before: Bool, after: Bool, least: int, most: int) -> float:
+    """Rows the picture jumped down between two frames, looked for from ``least`` to ``most`` rows; NaN if untold.
+
+    ``before`` and ``after`` are the masks ``frame_shifts`` compares ([rows, columns]). A screen
+    recording that stutters shows one picture for a while and then one much further on: further
+    than a frame is followed in the ordinary way, so it is looked for over nearly the whole
+    height of the strip, where the two pictures share only a few rows.
+    """
+    rows = before.shape[0]
+    most = min(most, rows - 4)
+    if most < least:
+        return float("nan")
+    scores = np.zeros(most - least + 1, dtype=np.float32)
+    for n, shift in enumerate(range(least, most + 1)):
+        a, b = before[: rows - shift], after[shift:]
+        union = int((a | b).sum())
+        if union >= 0.002 * before.size:  # enough of the two pictures in what they share
+            scores[n] = float((a & b).sum()) / union
+    best = int(scores.argmax())
+    if scores[best] < 0.5 or scores[best] - float(np.median(scores)) < 0.08:
+        return float("nan")
+    return float(least + best)
+
+
 @dataclass
 class Roll:
     """The piano roll put back together: one row per pixel of travel."""
@@ -297,10 +321,12 @@ class Roll:
     colour: Float  # [rows, coloured zones, 3]
     spread: Float  # [rows, coloured zones]
     seen: Bool  # [rows] rows some frame showed
+    across: Float  # [rows] how much lighter or darker than the empty picture most of the row is (a line drawn across)
     origin: float  # how far the roll had scrolled where row 0 reaches the keyboard
     shown: NDArray[np.float64]  # [frames] how far the roll had scrolled in each frame, as shown
     even: NDArray[np.float64]  # [frames] the same with the unevenness of a screen recording taken out
     speed: float  # rows per frame, on average
+    filled: int = 0  # rows that never passed through the strip, taken from above it (see ``unroll``)
 
     def frame_of(self, row: float | NDArray[np.float64]) -> NDArray[np.float64]:
         """The frame in which roll row ``row`` is seen reaching the keyboard."""
@@ -326,13 +352,21 @@ def unroll(
     shown: NDArray[np.float64],
     even: NDArray[np.float64],
     lead: float,
+    *,
+    across: Float | None = None,
+    spare: dict[int, tuple[NDArray[np.uint8], ...]] | None = None,
 ) -> Roll:
     """Place every strip row on the roll.
 
     ``solid`` ([frames, rows, zones], 0..255), ``cover``, ``colour`` and ``spread`` hold the note
     strip of the frames numbered ``frames``; the strip's last row is ``lead`` rows above the row
     where notes land. ``shown`` says how far the roll had scrolled in every frame of the video.
-    A row seen in several frames is averaged.
+    A row seen in several frames is averaged. ``across`` ([frames, rows]) is averaged the same way.
+
+    ``spare`` holds, for a few frames, the same five readings of the rows just above the strip
+    ([rows above, zones], the lowest of them last). Where the picture moved further between two
+    frames than the strip is tall (a recording that stuttered, and caught up in one jump), the
+    rows that never passed through the strip are taken from above it in the frame before.
     """
     rows, zones, coloured = solid.shape[1], solid.shape[2], cover.shape[2]
     # Row r of the strip is (lead + rows - 1 - r) rows above the landing row.
@@ -345,20 +379,52 @@ def unroll(
     out_cover = np.zeros((length, coloured), dtype=np.float32)
     out_colour = np.zeros((length, coloured, 3), dtype=np.float32)
     out_spread = np.zeros((length, coloured), dtype=np.float32)
+    out_across = np.zeros(length, dtype=np.float32)
     times = np.zeros(length, dtype=np.float32)
+
+    def place(
+        index: NDArray[np.int64],
+        solid_: NDArray[np.uint8],
+        grey_: NDArray[np.uint8],
+        cover_: NDArray[np.uint8],
+        colour_: NDArray[np.uint8],
+        spread_: NDArray[np.uint8],
+    ) -> None:
+        nonlocal times
+        times += np.bincount(index, minlength=length).astype(np.float32)
+        weight = solid_.reshape(-1, zones).astype(np.float32) / 255.0
+        np.add.at(out_solid, index, weight)
+        np.add.at(out_grey, index, grey_.reshape(-1, zones).astype(np.float32))
+        np.add.at(out_cover, index, cover_.reshape(-1, coloured).astype(np.float32) / 255.0)
+        part = weight[:, :coloured]
+        np.add.at(out_colour, index, colour_.reshape(-1, coloured, 3).astype(np.float32) * part[..., None])
+        np.add.at(out_spread, index, spread_.reshape(-1, coloured).astype(np.float32) * part)
+
     block = 1500  # frames at a time, to keep the float copies of the strips small
     for begin in range(0, len(frames), block):
         chosen = slice(begin, begin + block)
         position = scrolled[chosen, None] + travel[None, :]
         index = np.clip(np.rint(position - origin).astype(np.int64), 0, length - 1).ravel()
-        times += np.bincount(index, minlength=length).astype(np.float32)
-        weight = solid[chosen].reshape(-1, zones).astype(np.float32) / 255.0
-        np.add.at(out_solid, index, weight)
-        np.add.at(out_grey, index, grey[chosen].reshape(-1, zones).astype(np.float32))
-        np.add.at(out_cover, index, cover[chosen].reshape(-1, coloured).astype(np.float32) / 255.0)
-        part = weight[:, :coloured]
-        np.add.at(out_colour, index, colour[chosen].reshape(-1, coloured, 3).astype(np.float32) * part[..., None])
-        np.add.at(out_spread, index, spread[chosen].reshape(-1, coloured).astype(np.float32) * part)
+        place(index, solid[chosen], grey[chosen], cover[chosen], colour[chosen], spread[chosen])
+        if across is not None:
+            np.add.at(out_across, index, across[chosen].reshape(-1).astype(np.float32))
+    filled = 0
+    if spare:
+        where = {int(frame): n for n, frame in enumerate(frames)}
+        for frame, kept in sorted(spare.items()):
+            n = where.get(frame)
+            if n is None or n + 1 >= len(frames):
+                continue
+            high = kept[0].shape[0]  # rows above the strip, the lowest last: row r is (lead + rows + high - 1 - r) up
+            position = scrolled[n] + lead + rows + (high - 1 - np.arange(high))
+            index = np.rint(position - origin).astype(np.int64)
+            # Every row of the roll passes through the strip of some frame, but those a jump passed over.
+            fresh = (index >= 0) & (index < length)
+            fresh[fresh] = times[index[fresh]] == 0
+            if not fresh.any():
+                continue
+            place(index[fresh], *(part[fresh] for part in kept))
+            filled += int(fresh.sum())
     weighed = np.maximum(out_solid[:, :coloured], 1e-6)
     out_colour /= weighed[..., None]
     out_spread /= weighed
@@ -366,6 +432,7 @@ def unroll(
     out_solid /= seen
     out_grey /= seen
     out_cover /= seen
+    out_across /= np.maximum(times, 1.0)
     # Strictly increasing, so that a place on the roll has one frame (a repeated frame scrolls nothing).
     ramp = 1e-6 * np.arange(len(shown))
     return Roll(
@@ -375,11 +442,44 @@ def unroll(
         colour=out_colour,
         spread=out_spread,
         seen=times > 0,
+        across=out_across,
+        filled=filled,
         origin=origin,
         shown=shown + ramp,
         even=even + ramp,
         speed=float((shown[frames[-1]] - shown[frames[0]]) / max(1, frames[-1] - frames[0])),
     )
+
+
+LINE_LEVEL = 3.0  # grey levels most of a row must differ by from the empty picture for a line to be drawn there
+
+
+def lines_across(roll: Roll, widest: int) -> list[float]:
+    """The rows of the roll at which a thin line is drawn right across it, in order: the bar lines of the music.
+
+    A roll made from a score often shows its bars: a faint line across the whole picture where
+    each begins, falling with the notes. Such a line shifts most of a row away from the empty
+    picture by the same few grey levels (``Roll.across``), which no note does, for no more than
+    ``widest`` rows. The lines of one video all look alike: what is lighter where they are
+    darker, or half as strong, is something else.
+    """
+    level = np.where(roll.seen, roll.across, 0.0).astype(np.float64)
+    if len(level) == 0:
+        return []
+    noise = 1.4826 * float(np.median(np.abs(level - np.median(level))))
+    floor = max(LINE_LEVEL, 8.0 * noise)
+    found: list[tuple[float, float, int]] = []  # row, strength, lighter (+1) or darker (-1)
+    for sign in (1, -1):
+        for a, b in _runs(sign * level > floor):
+            if b - a > widest:
+                continue  # a caption, a fade: nothing that thin
+            weight = sign * level[a:b]
+            found.append((a + float((weight * np.arange(b - a)).sum() / weight.sum()), float(weight.max()), sign))
+    if len(found) < 4:
+        return []
+    sign = 1 if sum(s for _, _, s in found) >= 0 else -1
+    usual = float(np.median([strength for _, strength, s in found if s == sign]))
+    return sorted(row for row, strength, s in found if s == sign and 0.5 * usual <= strength <= 2.0 * usual)
 
 
 @dataclass(frozen=True)
@@ -392,6 +492,7 @@ class Bar:
     colour: tuple[float, float, float]  # mean RGB
     joined: bool = False  # separated from a touching bar by its corners, not by a gap
     doubtful: bool = False  # a black key read between two sounding white keys
+    shared: bool = False  # on a key the other hand has a bar on too, one drawn over the other
 
 
 def _runs(mask: Bool) -> list[tuple[int, int]]:
@@ -615,6 +716,62 @@ def _split_at_colour_change(start: int, end: int, colour: Float, least: int) -> 
     return [(start, start + best), (start + best, end)]
 
 
+def _chroma(values: Float) -> Float:
+    """What colour each of ``values`` ([n, 3] RGB) is, whatever its brightness: [n, 2]."""
+    return np.stack([values[:, 0] - values[:, 1], (values[:, 0] + values[:, 1]) / 2 - values[:, 2]], axis=1)
+
+
+def _unlike(a: Float, b: Float) -> bool:
+    """Whether two colours (as ``_chroma`` has them) are different colours, both clearly coloured."""
+    strength = min(float(np.linalg.norm(a)), float(np.linalg.norm(b)))
+    if strength < 25.0:
+        return False
+    cosine = float(a @ b) / (float(np.linalg.norm(a)) * float(np.linalg.norm(b)))
+    return bool(cosine <= np.cos(np.radians(40.0)))
+
+
+def _colour_pieces(start: int, end: int, colour: Float, least: int) -> list[tuple[int, int, int]] | None:
+    """The run [start, end) cut wherever it goes from one of two colours to the other:
+    (first row, row after the last, which colour: 0 or 1) in order, or None if it has one colour throughout.
+
+    Unlike ``_split_at_colour_change`` this finds every change, not the one that divides the run
+    best: a bar of one hand drawn over the middle of a longer bar of the other is three pieces.
+    """
+    if end - start < 2 * least:
+        return None
+    chroma = _chroma(colour[start:end].astype(np.float64))
+    centred = chroma - chroma.mean(axis=0)
+    axis = np.linalg.svd(centred, full_matrices=False)[2][0]  # the direction along which the colours differ most
+    along = centred @ axis
+    labels = along > (float(along.min()) + float(along.max())) / 2.0
+    for _ in range(4):
+        if labels.all() or not labels.any():
+            return None
+        low, high = chroma[~labels].mean(axis=0), chroma[labels].mean(axis=0)
+        again = np.linalg.norm(chroma - high, axis=1) < np.linalg.norm(chroma - low, axis=1)
+        if bool((again == labels).all()):
+            break
+        labels = again
+    if labels.all() or not labels.any() or not _unlike(chroma[~labels].mean(axis=0), chroma[labels].mean(axis=0)):
+        return None
+    pieces = [[a, b, 1] for a, b in _runs(labels)] + [[a, b, 0] for a, b in _runs(~labels)]
+    pieces.sort()
+    while len(pieces) > 1:
+        # Where two colours meet a row or two are neither: a piece too short to be a bar belongs to its neighbours.
+        k = min(range(len(pieces)), key=lambda i: pieces[i][1] - pieces[i][0])
+        if pieces[k][1] - pieces[k][0] >= least:
+            break
+        if 0 < k < len(pieces) - 1:
+            pieces[k - 1 : k + 2] = [[pieces[k - 1][0], pieces[k + 1][1], pieces[k - 1][2]]]
+        elif k == 0:
+            pieces[:2] = [[pieces[0][0], pieces[1][1], pieces[1][2]]]
+        else:
+            pieces[-2:] = [[pieces[-2][0], pieces[-1][1], pieces[-2][2]]]
+    if len(pieces) < 2:
+        return None
+    return [(start + a, start + b, label) for a, b, label in pieces]
+
+
 FAINT_NOTCH = 0.3  # share of a bar's corner strips that must show through for a faint seam
 DEEP_NOTCH = 0.45  # ... for one that needs nothing else to say so (one corner strip of two showing through)
 
@@ -696,6 +853,20 @@ def without_a_bars_colour(bars: list[Bar], roll: Roll, zones: Zones, keyboard: K
     return faint
 
 
+@dataclass(frozen=True)
+class _Stretch:
+    """A stretch of one key covered without a seam: one bar, or bars of two colours touching or overlapping."""
+
+    key: int
+    start: int
+    end: int
+    joined: bool
+    reference: int  # the zone its colour is read from
+    colour: tuple[float, float, float]
+    cuts: list[tuple[int, int]]  # as two bars back to back, if its colour changes for good (else itself)
+    pieces: list[tuple[int, int, int]] | None  # every piece of one colour, in order (see ``_colour_pieces``)
+
+
 def read_bars(roll: Roll, zones: Zones, keyboard: Keyboard, *, least_rows: int = 4) -> list[Bar]:
     """Every bar on the roll, in order of key and time."""
     present, doubtful = key_presence(roll, zones, keyboard)
@@ -705,6 +876,7 @@ def read_bars(roll: Roll, zones: Zones, keyboard: Keyboard, *, least_rows: int =
     longest_notch = max(6, round(0.6 * keyboard.white_width))
     floor = float(np.percentile(roll.grey[roll.seen], 20)) if roll.seen.any() else 0.0  # the empty background
     bars: list[Bar] = []
+    stretches: list[_Stretch] = []
     for index, key in enumerate(keys):
         if not zones.readable[index]:
             continue
@@ -773,25 +945,97 @@ def read_bars(roll: Roll, zones: Zones, keyboard: Keyboard, *, least_rows: int =
                     if weights > 0:
                         break
                 reference = parts[0][0] if parts[0][0] >= 0 else parts[1][0]
-                for c, d in _split_at_colour_change(a, b, roll.colour[:, reference], 3 * least_rows):
-                    if (c, d) != (a, b):
-                        piece = roll.solid[c:d, reference]
-                        mean = (roll.colour[c:d, reference] * piece[:, None]).sum(axis=0) / max(
-                            float(piece.sum()), 1e-6
-                        )
-                        colour = (float(mean[0]), float(mean[1]), float(mean[2]))
-                    else:
-                        mean = sums / max(weights, 1e-6)
-                        colour = (float(mean[0]), float(mean[1]), float(mean[2]))
-                    bars.append(
-                        Bar(
-                            key=index,
-                            start=float(c),
-                            end=float(d),
-                            colour=colour,
-                            joined=joined or c != a,
-                            doubtful=bool(doubtful[c:d, index].mean() > 0.5),
-                        )
+                whole = sums / max(weights, 1e-6)
+                stretches.append(
+                    _Stretch(
+                        index,
+                        a,
+                        b,
+                        joined,
+                        reference,
+                        (float(whole[0]), float(whole[1]), float(whole[2])),
+                        _split_at_colour_change(a, b, roll.colour[:, reference], 3 * least_rows),
+                        _colour_pieces(a, b, roll.colour[:, reference], 3 * least_rows),
                     )
+                )
+
+    def tone_of(reference: int, c: int, d: int) -> Float:
+        piece = roll.solid[c:d, reference]
+        mean: Float = (roll.colour[c:d, reference] * piece[:, None]).sum(axis=0) / max(float(piece.sum()), 1e-6)
+        return mean
+
+    def bar(stretch: _Stretch, c: int, d: int, mean: Float | None = None) -> Bar:
+        colour = stretch.colour if mean is None else (float(mean[0]), float(mean[1]), float(mean[2]))
+        return Bar(
+            key=stretch.key,
+            start=float(c),
+            end=float(d),
+            colour=colour,
+            joined=stretch.joined or c != stretch.start,
+            doubtful=bool(doubtful[c:d, stretch.key].mean() > 0.5),
+            shared=stretch.pieces is not None,
+        )
+
+    covered: list[tuple[int, float, float]] = []  # a bar whose end is hidden: where it was covered, where it may end
+    for stretch in stretches:
+        pieces = stretch.pieces
+        if pieces is None:
+            for c, d in stretch.cuts:
+                same = (c, d) == (stretch.start, stretch.end)
+                bars.append(bar(stretch, c, d, None if same else tone_of(stretch.reference, c, d)))
+            continue
+        if len(pieces) == 2 and len(stretch.cuts) == 2:
+            pieces = [(*stretch.cuts[0], pieces[0][2]), (*stretch.cuts[1], pieces[1][2])]
+        # Two colours on one key with no seam between: two hands on it at once. A bar is drawn over
+        # whatever began before it, so going up the roll a colour that has not been there is a note
+        # that begins (over the other, which may run on beneath), and a colour that comes back is the
+        # other note ending, the one beneath showing again.
+        begun = {pieces[0][2]: pieces[0][0]}  # each colour's note that has begun and not ended: where it began
+        hidden: dict[int, int] = {}  # ... and where it was covered, if it is
+        shown: dict[int, list[tuple[int, int]]] = {0: [], 1: []}  # the pieces of each colour's note that show
+        shown[pieces[0][2]].append(pieces[0][:2])
+        sounding: list[
+            tuple[int, int, int, int | None, list[tuple[int, int]]]
+        ] = []  # colour, from, to, covered at, shown
+        for (_, row, old), (c, d, colour) in zip(pieces, pieces[1:], strict=False):
+            if colour in begun:
+                sounding.append((old, begun.pop(old), row, None, shown[old]))
+                shown[old] = []
+                hidden.pop(colour, None)
+            else:
+                begun[colour] = row
+                hidden[old] = row
+            shown[colour].append((c, d))
+        last = pieces[-1][2]
+        sounding.append((last, begun.pop(last), pieces[-1][1], None, shown[last]))
+        for colour, row in begun.items():
+            sounding.append((colour, row, hidden[colour], hidden[colour], shown[colour]))
+        for _colour, first_row, last_row, covered_at, parts_shown in sorted(sounding, key=lambda note: note[1]):
+            weight = np.array([float(roll.solid[c:d, stretch.reference].sum()) for c, d in parts_shown])
+            mean = np.sum(
+                [tone_of(stretch.reference, c, d) * w for (c, d), w in zip(parts_shown, weight, strict=True)], axis=0
+            ) / max(float(weight.sum()), 1e-6)
+            bars.append(bar(stretch, first_row, last_row, mean))
+            if covered_at is not None:
+                covered.append((len(bars) - 1, float(covered_at), float(stretch.end)))
+    # Where a bar ends beneath another it cannot be seen to. The notes its hand struck with it say: a chord is
+    # let go together. Failing them it ends where it was covered.
+    together = 2.0 * least_rows
+    for position, from_row, at_most in covered:
+        beneath = bars[position]
+        own = _chroma(np.asarray(beneath.colour)[None])[0]
+        ends = [
+            other.end
+            for k, other in enumerate(bars)
+            if k != position
+            and other.key != beneath.key
+            and abs(other.start - beneath.start) <= together
+            and not _unlike(_chroma(np.asarray(other.colour)[None])[0], own)
+        ]
+        if ends and from_row <= float(np.median(ends)) <= at_most + together:
+            last_seen = min(float(np.median(ends)), at_most)
+            bars[position] = Bar(
+                beneath.key, beneath.start, last_seen, beneath.colour, beneath.joined, beneath.doubtful, True
+            )
     bars.sort(key=lambda bar: (bar.start, keys[bar.key].pitch))
     return bars

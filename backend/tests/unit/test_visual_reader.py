@@ -132,6 +132,65 @@ def test_the_glow_past_the_end_of_a_bar_is_not_a_note(read) -> None:
     assert reading.facts["notes"]["faint_pieces_dropped"] >= 6
 
 
+def test_a_glow_that_floods_the_keys_around_a_landing_note(read) -> None:
+    # The older players light up the keyboard around every landing note: a white disc two and a half
+    # keys high, over the neighbouring keys too. Read inside it, every key beside a landing note is
+    # covered (a note) and a note that has ended is covered still. It is read above the light.
+    truth = falling(piano_video.from_beats(synth.ode_to_joy(), synth.ODE_BPM))
+    reading, lead = read(truth, Style(halo=2.6, flare=False, labels=False))
+    onsets, ends = compare(reading, truth, lead)
+    assert np.abs(onsets).max() < 0.03 and np.abs(ends).max() < 0.04
+    roll, key = reading.facts["roll"], reading.facts["keyboard"]["white_key_width"]
+    assert 1.6 * key < roll["landing_light_rows"] < roll["read_rows_above_keys"] < 4.0 * key
+    assert reading.facts["key_check"]["bars_confirmed"] == len(truth)
+
+
+def test_a_recording_that_hangs_and_then_catches_up(read) -> None:
+    # A screen recording stutters: one picture for half a second, then the roll where it has got to
+    # meanwhile. The picture that stayed is not more roll, and what the jump passed over (further than
+    # the strip is tall) is still above the strip in the last picture before it.
+    truth = falling(piano_video.from_beats(synth.ode_to_joy(), synth.ODE_BPM))
+    hangs = truth[len(truth) // 2].start - 0.25
+    reading, lead = read(truth, Style(stutter=(hangs, 0.5), labels=False))
+    onsets, ends = compare(reading, truth, lead)
+    assert np.abs(onsets).max() < 0.03 and np.abs(ends).max() < 0.04
+    roll = reading.facts["roll"]
+    assert roll["steady"] is True and roll["stutters"] == 1 and roll["frames_still"] >= 13
+    assert roll["rows_read_above_the_strip"] > 0 and roll["rows_never_shown"] == 0
+
+
+def test_the_bar_lines_drawn_across_the_roll_are_read(read) -> None:
+    # A roll made from a score shows its bars: a faint line right across it where each begins. They
+    # are read as the notes are, to the row, and timed as the notes are.
+    truth = falling(piano_video.from_beats(synth.ode_to_joy(), synth.ODE_BPM))
+    bar = 4 * 60.0 / synth.ODE_BPM
+    reading, lead = read(truth, Style(bar_seconds=bar, labels=False))
+    onsets, ends = compare(reading, truth, lead)
+    assert np.abs(onsets).max() < 0.025 and np.abs(ends).max() < 0.04
+    lines = np.array(reading.lines)
+    last = max(note.end for note in truth)
+    expected = lead + bar * np.arange(1, int(last / bar))  # those that fall through the strip while notes do
+    assert len(lines) >= len(expected)
+    assert all(np.abs(lines - t).min() < 0.03 for t in expected)
+    assert all(np.abs((t - lead) / bar - round((t - lead) / bar)) * bar < 0.03 for t in lines)
+    assert reading.facts["bar_lines"]["drawn"] == len(lines)
+    assert abs(reading.facts["bar_lines"]["seconds_apart"] - bar) < 0.01
+
+
+def test_two_hands_on_one_key_at_once(read) -> None:
+    # A bar is drawn over whatever began before it. The left hand holds a chord and the right strikes
+    # one of its keys meanwhile: the right hand's bar lies across the left's, which runs on beneath it.
+    truth = [VideoNote(60, 0.0, 2.0, "left"), VideoNote(64, 0.0, 2.0, "left"), VideoNote(60, 0.8, 1.1, "right")]
+    # The other way about: the right hand holds one and the left repeats a key of it. Between the left
+    # hand's notes the right hand's shows again; where its end lies beneath the last, its chord says.
+    truth += [VideoNote(67, 2.5, 4.5, "right"), VideoNote(72, 2.5, 4.5, "right")]
+    truth += [VideoNote(67, 3.0, 3.4, "left"), VideoNote(67, 3.5, 3.9, "left"), VideoNote(67, 4.0, 4.8, "left")]
+    reading, lead = read(falling(truth), Style(labels=False, title_seconds=0.5))
+    onsets, ends = compare(reading, falling(truth), lead)
+    assert np.abs(onsets).max() < 0.03 and np.abs(ends).max() < 0.04
+    assert reading.facts["notes"]["two_hands_on_one_key"] == 6 and reading.facts["notes"]["separated_by_corners"] == 0
+
+
 @pytest.mark.xfail(strict=True, reason="known limit: see the test")
 def test_a_note_name_on_a_narrow_bar_is_not_a_seam(read) -> None:
     # Pins a known limit. At 720p with 61 keys shown, the bar of a black key is about 20 pixels

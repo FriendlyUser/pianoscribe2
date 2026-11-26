@@ -276,10 +276,11 @@ def measure_keyboard(clean: Gray, rows: tuple[int, int, int], hidden: NDArray[np
     cs = [j for j in whites if (j + offset) % 7 == 0]
     if not cs:
         raise failure
-    full = [j for j in whites if boundaries[j] >= -0.1 * period and boundaries[j + 1] <= width + 0.1 * period]
-    certain = len(full) == FULL_KEYBOARD_WHITES and (full[0] + offset) % 7 == 5  # starts on A: A0 to C8
+    # Every white key of a piano, the lowest an A: the whole keyboard (A0 to C8), even with a sliver of an end key
+    # cut off by the edge of the picture.
+    certain = len(whites) == FULL_KEYBOARD_WHITES and (whites[0] + offset) % 7 == 5
     if certain:
-        middle_c = full[0] + 23
+        middle_c = whites[0] + 23
     else:
         middle = (boundaries[whites[0]] + boundaries[whites[-1] + 1]) / 2.0
         middle_c = min(cs, key=lambda j: (round(abs((boundaries[j] + boundaries[j + 1]) / 2.0 - middle), 3), j))
