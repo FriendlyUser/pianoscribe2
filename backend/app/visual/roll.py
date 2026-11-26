@@ -615,6 +615,62 @@ def _split_at_colour_change(start: int, end: int, colour: Float, least: int) -> 
     return [(start, start + best), (start + best, end)]
 
 
+FAINT_NOTCH = 0.3  # share of a bar's corner strips that must show through for a faint seam
+DEEP_NOTCH = 0.45  # ... for one that needs nothing else to say so (one corner strip of two showing through)
+
+
+def faint_notches(
+    roll: Roll, zones: Zones, keyboard: Keyboard, bars: list[Bar], *, least: int, wide: int
+) -> list[tuple[int, float, float]]:
+    """(index into ``bars``, roll row, depth) of each place where a bar looks faintly like two bars meeting.
+
+    Where two rounded bars meet, the background shows at their corners. In a small or blurred
+    picture that notch is a row or two of the corner strips somewhat less covered than the
+    rest of the bar: too little to cut a bar on outright (``_split_at_notches`` asks for
+    strips all but empty), enough to count with something else that says a note is struck
+    there. Only white keys are looked at (the name printed on a black key's narrow bar reaches
+    its sides), only strips no neighbouring key's bar lies over, and a notch has whole bar
+    within ``wide`` rows on both sides and lies ``least`` rows or more from either end: the
+    bar's own rounded ends are no seam.
+    """
+    present, _ = key_presence(roll, zones, keyboard)
+    found: list[tuple[int, float, float]] = []
+    for number, bar in enumerate(bars):
+        if keyboard.keys[bar.key].black:
+            continue
+        sides = [
+            (int(zones.edge_left[bar.key]), int(zones.black_left[bar.key])),
+            (int(zones.edge_right[bar.key]), int(zones.black_right[bar.key])),
+        ]
+        first, last = int(np.ceil(bar.start)), int(np.floor(bar.end))
+        if last - first < 2 * least + 3:
+            continue
+        total = np.zeros(last - first, dtype=np.float64)
+        seen = np.zeros(last - first, dtype=np.float64)
+        for strip, other in sides:
+            if strip < 0:
+                continue
+            clear = ~present[first:last, other] if other >= 0 else np.ones(last - first, dtype=bool)
+            total += np.where(clear, roll.solid[first:last, strip], 0.0)
+            seen += clear
+        if not (seen > 0).any():
+            continue
+        cover = np.where(seen > 0, total / np.maximum(seen, 1.0), np.nan)
+        usual = float(np.nanmedian(cover[1:-1]))
+        row = least
+        while row < len(cover) - least:
+            depth = usual - cover[row]
+            lowest = np.nanmin(cover[max(0, row - 2) : row + 3])
+            if not np.isnan(depth) and depth >= FAINT_NOTCH and cover[row] <= lowest:
+                before, after = cover[max(0, row - wide) : row], cover[row + 1 : row + wide + 1]
+                whole = usual - 0.5 * FAINT_NOTCH
+                if np.nanmax(np.append(before, -1.0)) >= whole and np.nanmax(np.append(after, -1.0)) >= whole:
+                    found.append((number, float(first + row), float(depth)))
+                    row += wide
+            row += 1
+    return found
+
+
 def read_bars(roll: Roll, zones: Zones, keyboard: Keyboard, *, least_rows: int = 4) -> list[Bar]:
     """Every bar on the roll, in order of key and time."""
     present, doubtful = key_presence(roll, zones, keyboard)

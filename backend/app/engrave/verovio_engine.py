@@ -82,10 +82,49 @@ def _options(layout: Literal["print", "compact"], page_size: str) -> dict[str, A
     }
 
 
+def ottavas_in_reading_order(musicxml: str) -> str:
+    """``musicxml`` with every octave line (8va, 8vb) written where Verovio looks for it.
+
+    MusicXML lets a bar's directions stand anywhere in the bar, each with its own place in
+    time, and a writer may put them all after the bar's notes. Verovio starts an octave line
+    at the next note it reads, whichever staff that note is on: written after the notes, a
+    line for the left hand is drawn a bar late and over the right hand's staff. Here a line's
+    start is moved to just before the first note of its own staff in its bar, and its end to
+    just after the last; nothing else is changed. Text with no octave lines is returned as it is.
+    """
+    if "octave-shift" not in musicxml:
+        return musicxml
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(musicxml)  # noqa: S314 - our own score writer's output
+    except ET.ParseError:
+        return musicxml
+    for part in root.iter("part"):
+        for measure in part.findall("measure"):
+            lines = [
+                (child, shift.get("type"), child.findtext("staff") or "1")
+                for child in measure
+                if child.tag == "direction"
+                for shift in [next(child.iter("octave-shift"), None)]
+                if shift is not None
+            ]
+            for direction, kind, staff in lines:
+                notes = [c for c in measure if c.tag == "note" and (c.findtext("staff") or "1") == staff]
+                if not notes:
+                    continue
+                measure.remove(direction)
+                at = list(measure).index(notes[-1]) + 1 if kind == "stop" else list(measure).index(notes[0])
+                measure.insert(at, direction)
+    declaration = musicxml[: musicxml.index("<score")] if "<score" in musicxml else ""
+    return declaration + ET.tostring(root, encoding="unicode")
+
+
 def engrave(musicxml: str, *, page_size: str = "A4") -> Engraving:
     """Render ``musicxml`` to SVG pages (two layouts), a timing map and MIDI."""
     import verovio
 
+    musicxml = ottavas_in_reading_order(musicxml)
     with _lock:
         toolkit = verovio.toolkit()
         toolkit.setOptions(_options("print", page_size))

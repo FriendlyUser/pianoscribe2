@@ -145,3 +145,36 @@ def test_cjk_text_gets_a_font_that_has_the_glyphs() -> None:
         with_cjk_font("<text><tspan>Ode to Joy</tspan></text>", "Noto Serif CJK JP")
         == "<text><tspan>Ode to Joy</tspan></text>"
     )
+
+
+def test_octave_lines_are_written_where_the_engraver_reads_them() -> None:
+    # A writer may put a bar's directions after its notes, each with its place in time. Verovio
+    # starts an octave line at the next note it reads: so written, the left hand's line would be
+    # drawn a bar late and over the right hand's staff.
+    from app.engrave.verovio_engine import ottavas_in_reading_order
+
+    def note(step: str, octave: int, staff: int) -> str:
+        return (
+            f"<note><pitch><step>{step}</step><octave>{octave}</octave></pitch><duration>4</duration>"
+            f"<voice>{staff}</voice><type>whole</type><staff>{staff}</staff></note>"
+        )
+
+    def line(kind: str, staff: int) -> str:
+        return (
+            f'<direction placement="below"><direction-type><octave-shift type="{kind}" size="8" />'
+            f"</direction-type><staff>{staff}</staff></direction>"
+        )
+
+    bar = (
+        f'<measure number="1">{note("C", 5, 1)}<backup><duration>4</duration></backup>{note("A", 0, 2)}'
+        f"<backup><duration>4</duration></backup>{line('up', 2)}<forward><duration>4</duration></forward>{line('stop', 2)}"
+        "</measure>"
+    )
+    score = f'<?xml version="1.0"?><score-partwise version="3.1"><part id="P1">{bar}</part></score-partwise>'
+    moved = ottavas_in_reading_order(score)
+    low = moved.index("<octave>0</octave>")
+    assert moved.index('type="up"') < low < moved.index('type="stop"')
+    assert moved.index("<octave>5</octave>") < moved.index('type="up"')  # the right hand's note is left out of it
+    assert moved.count("<note>") == 2 and moved.count("octave-shift") == 2
+    plain = score.replace(line("up", 2), "").replace(line("stop", 2), "")
+    assert ottavas_in_reading_order(plain) == plain

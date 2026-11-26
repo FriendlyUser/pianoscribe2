@@ -52,6 +52,32 @@ def onset_strength(audio: NDArray[np.float32], rate: int, *, size: int = 1024, h
     return np.concatenate(([0.0], rise)), rate / hop
 
 
+def attack_times(audio: NDArray[np.float32], rate: int, *, apart: float = 0.08, within: float = 0.06) -> list[float]:
+    """Seconds of the strong attacks in ``audio``: where the sound's rise jumps, inside ``within`` seconds,
+    by more than its usual level (its mean plus two standard deviations); the strongest of any
+    closer together than ``apart``.
+
+    The jump, not the level: while a chord rings the rise ripples on at about that level for
+    some tenths of a second, and a peak of the ripple is no note.
+    """
+    strength, per_second = onset_strength(audio, rate)
+    level = float(strength.mean() + 2.0 * strength.std())
+    back = max(1, int(round(within * per_second)))
+    kept: list[int] = []
+    for i in range(1, len(strength) - 1):
+        if strength[i] < strength[i - 1] or strength[i] <= strength[i + 1]:
+            continue
+        if strength[i] - float(strength[max(0, i - back) : i].min()) < level:
+            continue
+        if kept and (i - kept[-1]) / per_second < apart:
+            if strength[i] > strength[kept[-1]]:
+                kept[-1] = i
+        else:
+            kept.append(i)
+    # As in ``audio_offset``: a frame's rise is measured between two windows, half a hop before its centre.
+    return [(i - 0.5) / per_second for i in kept]
+
+
 @dataclass(frozen=True)
 class Offset:
     seconds: float  # add this to the notes' times to put them on the audio's clock
@@ -137,3 +163,49 @@ def best_octave(scores: dict[int, float], *, margin: float = 0.02) -> int | None
     if len(ranked) < 2 or ranked[0][1] <= 0 or ranked[0][1] - ranked[1][1] < margin:
         return None
     return ranked[0][0]
+
+
+RINGS = 0.15  # share of a note's attack still sounding well after its key is up, above which the pedal holds the notes
+
+
+def rings_on(
+    notes: Sequence[tuple[float, float, int]], audio: NDArray[np.float32], rate: int, *, after: float = 0.3
+) -> float | None:
+    """How much of a short note still sounds ``after`` seconds after its key is released, as a share of its attack.
+
+    The median over the notes (start, end, pitch, on the audio's clock) it can be measured
+    for: short ones, not too low for their pitch to be told from its neighbours, whose pitch
+    and whose overtones nothing else strikes until then. None when there are too few.
+
+    A damper stops a string within a tenth of a second of the key's release. A note that
+    goes on sounding is held by the pedal: its key says when it was struck, not how long it
+    lasts, and a score writes it out to the next note rather than as a short note and a rest.
+    """
+    size, hop = 4096, 512
+    magnitude = _spectrogram(_mono(audio), size, hop)
+    per_second = rate / hop
+    frequency = np.fft.rfftfreq(size, 1.0 / rate)
+    pitch_of = np.full(len(frequency), -99.0)
+    pitch_of[1:] = 69.0 + 12.0 * np.log2(frequency[1:] / 440.0)
+    starts = np.array([note[0] for note in notes])
+    pitches = np.array([note[2] for note in notes])
+    bands: dict[int, Float] = {}
+    shares = []
+    for start, end, pitch in notes:
+        held = end - start
+        if pitch < 55 or held > 0.2:
+            continue
+        window = (starts > start + 0.02) & (starts < end + after + 0.05)
+        if any((other - pitch) % 12 == 0 or pitch - other in (19, 28) for other in pitches[window]):
+            continue  # struck again, or a note below whose overtone it is
+        first, last = int(round((start - 0.06) * per_second)), int(round((end + after) * per_second))
+        if first < 0 or last >= len(magnitude):
+            continue
+        if pitch not in bands:
+            bands[pitch] = magnitude[:, np.abs(pitch_of - pitch) <= 0.4].max(axis=1)
+        level = bands[pitch]
+        before = float(level[first])
+        attack = max(float(level[int(round((start + t) * per_second))]) for t in (0.05, 0.08)) - before
+        if attack > 0:
+            shares.append((float(level[last]) - before) / attack)
+    return float(np.median(shares)) if len(shares) >= 20 else None

@@ -50,7 +50,11 @@ def test_notes_take_the_simplest_grid_that_fits_their_beat() -> None:
 def test_note_values_show_the_beats() -> None:
     assert kinds(0, 12) == [(0, "quarter", 0, False)]
     assert kinds(0, 18) == [(0, "quarter", 1, False)]  # dotted quarter from the bar line
-    assert kinds(6, 18) == [(6, "eighth", 0, False), (12, "eighth", 0, False)]  # off the beat: tied across it
+    assert kinds(6, 18) == [(6, "quarter", 0, False)]  # eighth, quarter, eighth: a syncopation written whole
+    assert kinds(18, 30) == [(18, "eighth", 0, False), (24, "eighth", 0, False)]  # but not over the middle of the bar
+    assert kinds(3, 9) == [(3, "eighth", 0, False)]  # sixteenth, eighth, sixteenth inside one beat
+    assert kinds(3, 12) == [(3, "eighth", 1, False)]  # sixteenth, dotted eighth
+    assert kinds(9, 15) == [(9, "16th", 0, False), (12, "16th", 0, False)]  # off the beat and across it: tied
     assert kinds(12, 48) == [(12, "quarter", 0, False), (24, "half", 0, False)]  # shows the middle of the bar
     assert kinds(0, 48) == [(0, "whole", 0, False)]
     assert kinds(36, 60) == [(36, "quarter", 0, False), (48, "quarter", 0, False)]  # tied over the bar line

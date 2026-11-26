@@ -38,6 +38,106 @@ def signature_from_notes(pitches: list[int]) -> int:
     return max(range(-6, 7), key=lambda fifths: (inside(fifths), -abs(fifths)))
 
 
+def mark_tempos(measures: list, starts: list[float], end: float, steady: object | None) -> list[tuple[int, int]] | None:
+    """Metronome marks from the bars' own lengths, where the notes keep a steady beat; the marks set (bar, tempo).
+
+    A beat fitted to the notes gives each bar's tempo to a tenth of a beat a minute, so a tempo
+    is marked as it is (106, not the 105 a metronome has) and each lasting change of it is
+    marked where it happens. A bar or two slower than what went before, between marks, is a
+    ritardando. Returns None, having done nothing, when the notes keep no steady beat.
+    """
+    stretches = getattr(steady, "stretches", None) or []
+    edges = [*starts, end]
+    if getattr(steady, "followed", None):
+        lengths = zip(measures, edges, edges[1:], strict=False)
+        return mark_played(measures, [60.0 * float(measure.length) / (b - a) for measure, a, b in lengths])
+    if not stretches:
+        return None
+    fine = float(np.median([s["scatter_ms"] for s in stretches])) <= 5.0
+    apart, lasting = (0.012, 2) if fine else (0.03, 4)
+    tempos = []
+    sure = []  # per bar: its tempo is that of a beat fitted to the notes, not the length of a tracked bar
+    for k, measure in enumerate(measures):
+        middle = (edges[k] + edges[k + 1]) / 2.0
+        inside = [s for s in stretches if s["start"] <= middle <= s["end"]]
+        tempos.append(float(inside[0]["bpm"]) if inside else 60.0 * float(measure.length) / (edges[k + 1] - edges[k]))
+        sure.append(bool(inside))
+    runs: list[tuple[int, int, float]] = []  # first bar, bar after the last, tempo
+    first = 0
+    for k in range(1, len(tempos) + 1):
+        if k == len(tempos) or abs(tempos[k] / float(np.median(tempos[first:k])) - 1.0) > apart:
+            runs.append((first, k, float(np.median(tempos[first:k]))))
+            first = k
+    for measure in measures:
+        measure.directions = [d for d in measure.directions if not d[1].startswith(("metronome_", "tempo_"))]
+        measure.tempos = []
+    long = [run for run in runs if run[1] - run[0] >= lasting]
+    shown = round(long[0][2] if long else float(np.median(tempos)))
+    measures[0].directions.insert(0, (Fraction(0), f"metronome_quarter_{shown}"))
+    marks = [(0, shown)]
+    steady_tempo = float(shown)
+    slowed = False
+    closing = len(measures) - 2  # from here on a ritardando is the close of the piece: nothing returns to tempo
+    for a, b, tempo in runs:
+        measures[a].tempos = [(Fraction(0), tempo)]  # what is played, bar by bar
+        if b - a >= lasting:
+            # A tracked bar's length says its tempo to a few beats a minute, no better: that is no new tempo.
+            # Nor is a tempo no further from the one marked than bars of one tempo are from each other.
+            near = apart if all(sure[a:b]) else 0.04
+            same = round(tempo) == shown or abs(tempo / shown - 1.0) <= near
+            if not same and a > 0:
+                shown = round(tempo)
+                measures[a].directions.insert(0, (Fraction(0), f"metronome_quarter_{shown}"))
+                marks.append((a, shown))
+            elif slowed and a < closing:
+                measures[a].directions.insert(0, (Fraction(0), "tempo_a_tempo"))  # the tempo it slowed from
+            steady_tempo = tempo
+            slowed = False
+        elif a > 0 and tempo < 0.96 * steady_tempo and b < len(measures):
+            if not slowed:
+                measures[a].directions.insert(0, (Fraction(0), "tempo_rit"))
+            slowed = True
+        elif slowed and tempo >= 0.96 * steady_tempo:
+            if a < closing:
+                measures[a].directions.insert(0, (Fraction(0), "tempo_a_tempo"))
+            slowed = False
+    return marks
+
+
+SLOWED = 0.94  # of the tempo of the bars before it: a bar played slower than this is marked as a ritardando
+
+
+def mark_played(measures: list, tempos: list[float]) -> list[tuple[int, int]]:
+    """Tempo marks for playing that keeps no click's time (``steady_beats.follow``); the marks set (bar, tempo).
+
+    Each bar takes a little longer or shorter than the last, and none of that is a change of
+    tempo: one metronome mark stands at the head, the tempo of the opening bars. A bar plainly
+    slower than the eight before it (broadened before a new verse, or at the close) is marked
+    *rit.*, and *a tempo* where the playing is back to what it was. Every bar's own tempo is kept
+    for the sound, so that the score played back keeps the player's time.
+    """
+    for measure in measures:
+        measure.directions = [d for d in measure.directions if not d[1].startswith(("metronome_", "tempo_"))]
+        measure.tempos = []
+    shown = round(float(np.median(tempos[:16])))
+    measures[0].directions.insert(0, (Fraction(0), f"metronome_quarter_{shown}"))
+    slowed_from: float | None = None
+    for k, tempo in enumerate(tempos):
+        measures[k].tempos = [(Fraction(0), tempo)]
+        if k == 0:
+            continue
+        if slowed_from is None:
+            before = float(np.median(tempos[max(0, k - 8) : k]))
+            if tempo < SLOWED * before and k + 1 < len(tempos):
+                measures[k].directions.insert(0, (Fraction(0), "tempo_rit"))
+                slowed_from = before
+        elif tempo >= 0.96 * slowed_from:
+            if k < len(tempos) - 2:  # after that a ritardando is the close of the piece
+                measures[k].directions.insert(0, (Fraction(0), "tempo_a_tempo"))
+            slowed_from = None
+    return [(0, shown)]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--notes", required=True, help="notes read from the video (app.visual: visual.json)")
@@ -53,9 +153,12 @@ def main() -> None:
     from piano_score.musicxml import write_musicxml
     from piano_score.score import Duration, Group, Measure, Note
 
-    notes = json.loads(Path(args.notes).read_text(encoding="utf-8"))["notes"]
+    reading = json.loads(Path(args.notes).read_text(encoding="utf-8"))
+    notes = reading["notes"]
+    # Whether the notes ring on after their keys are released, as the reader heard it (app.visual.audio.rings_on).
+    let_ring = bool(((reading.get("facts") or {}).get("notes") or {}).get("let_ring"))
     annotation = regularize_bars(json.loads(Path(args.annotation).read_text(encoding="utf-8")))
-    plan = plan_score(notes, annotation)
+    plan = plan_score(notes, annotation, let_ring=let_ring)
 
     starts = [bar.seconds for bar in plan.bars]
     overall = signature_from_notes([int(n["pitch"]) for n in notes])
@@ -95,7 +198,9 @@ def main() -> None:
         if len(starts) > 1
         else last.seconds + 2.0
     )
-    apply_bar_tempos(measures, SimpleNamespace(bar_seconds=np.array([*starts, end])), 0)
+    marks = mark_tempos(measures, starts, end, plan.steady)
+    if marks is None:
+        apply_bar_tempos(measures, SimpleNamespace(bar_seconds=np.array([*starts, end])), 0)
     write_musicxml(measures, Path(args.out), title=args.title)
     facts = {
         "notes": plan.notes,
@@ -104,6 +209,23 @@ def main() -> None:
         "notes_off_the_grid": plan.off_grid,
         "notes_cut_short": plan.cut_short,
         "voices": plan.voices,
+        "notes_on_the_other_staff": plan.shared,
+        "let_ring": let_ring,
+        "notes_let_ring": plan.rung,
+        "octaves_rolled": plan.rolled,
+        "beats_put_back": plan.beats_put_back,
+        "tempo_marks": [{"bar": bar + 1, "quarter": tempo} for bar, tempo in marks or []],
+        "steady_beat": {
+            "beats_from_the_notes": sum(plan.steady.fitted),
+            "beats_from_the_tracker": len(plan.steady.fitted) - sum(plan.steady.fitted),
+            "bars_counted": plan.steady.regular_bars,
+            "bars_as_tracked": plan.steady.tracked_bars,
+            "stretches_on_another_beat_than_tracked": plan.steady.rephased,
+            "stretches": plan.steady.stretches,
+            "followed": plan.steady.followed,
+        }
+        if plan.steady is not None
+        else None,
     }
     print(f"@@facts {json.dumps(facts)}", flush=True)
     print(f"{len(measures)} measures, {plan.notes} notes -> {args.out}")

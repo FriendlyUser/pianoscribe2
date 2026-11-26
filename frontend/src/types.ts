@@ -35,8 +35,14 @@ export interface VideoReading {
   highest_key: string;
   /** "full keyboard", "audio" or "middle of the keyboard". */
   octave_from: string;
-  /** "colours": the video draws each hand in its own colour. "pitch": it does not; split at middle C. */
+  /**
+   * "colours": the video draws each hand in its own colour. "hands": it does not, and films the player's
+   * hands, which tell them apart. "pitch": neither; split at middle C.
+   */
   hands_from: string;
+  /** Strong attacks in the audio, and how many have a note read within 0.06 s; null when not counted. */
+  attacks_heard?: number | null;
+  attacks_with_a_note?: number | null;
   /** Share (0..1) of the notes read that are in the score, and of the score's notes that were read. */
   score_kept: number | null;
   score_backed: number | null;

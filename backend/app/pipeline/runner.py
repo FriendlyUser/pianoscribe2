@@ -46,6 +46,7 @@ def _video_result(reading: object, musicxml: str) -> VideoReading:
     assert isinstance(reading, VisualReading)
     facts: dict[str, dict[str, object]] = reading.facts  # type: ignore[assignment]
     notes, keys, keyboard = facts["notes"], facts["key_check"], facts["keyboard"]
+    heard = facts.get("audio_check") or {}
     kept, backed = score_fidelity(musicxml, (note.pitch for note in reading.notes))
     return VideoReading(
         notes=len(reading.notes),
@@ -58,6 +59,8 @@ def _video_result(reading: object, musicxml: str) -> VideoReading:
         highest_key=str(keyboard["highest"]),
         octave_from=str(facts["octave"]["source"]),
         hands_from=str(notes["hands_from"]),
+        attacks_heard=int(str(heard["attacks"])) if "attacks" in heard else None,
+        attacks_with_a_note=int(str(heard["attacks_with_a_note"])) if "attacks_with_a_note" in heard else None,
         score_kept=round(kept, 4),
         score_backed=round(backed, 4),
     )
