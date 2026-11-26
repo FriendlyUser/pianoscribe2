@@ -6,6 +6,10 @@ at the foot of each bar, a darker shade for the bars of black keys, a white flar
 a note lands, keys that light while they sound, octave lines behind the notes, a title
 card before the roll and a fade into it. It is then encoded with H.264 like any upload.
 
+Some tutorials are made differently, and ``Style`` can imitate them too: a dimmed film
+playing behind the notes (``film``), and a filmed keyboard, shaded by the light of the room,
+whose keys do not light and over which the player's hands move (``filmed``).
+
     from tests import piano_video
     piano_video.render(notes, path, piano_video.Style())
 
@@ -53,6 +57,8 @@ class Style:
     labels: bool = True
     flare: bool = True
     keys_light: bool = True
+    film: bool = False  # a dimmed film plays behind the notes instead of the still background
+    filmed: bool = False  # a filmed keyboard: shaded keys that do not light, and the player's hands over them
     title_seconds: float = 1.0  # a title card before the roll appears
     fade_frames: int = 6
     crf: int = 26  # H.264 quality; streaming sites are about this lossy
@@ -161,6 +167,76 @@ def _keyboard(style: Style, layout: _Layout, lit: dict[int, tuple[int, int, int]
     return np.asarray(image)
 
 
+def _filmed_keyboard(style: Style, layout: _Layout) -> np.ndarray:
+    """A keyboard as a camera sees it: white keys shaded towards the sides of the picture, black
+    keys whose sloping sides catch the light, grey gaps between the keys, a darker front edge."""
+    top = style.keyboard_top
+    depth = style.height - top
+    rows = np.arange(depth, dtype=np.float32)[:, None]
+    columns = np.arange(style.width, dtype=np.float32)[None, :]
+    # Measured on a filmed tutorial: about a fifth of each row of the keyboard is neither clearly
+    # bright nor clearly dark (shading towards the sides, reflections, the gaps between keys).
+    level = 215.0 + 15.0 * np.minimum(1.0, rows / (0.7 * depth))
+    level = np.where(rows > 0.94 * depth, 190.0, level)
+    level = level * (1.0 - 0.35 * ((columns - style.width / 2) / (style.width / 2)) ** 2)
+    image = Image.fromarray(np.repeat(level[..., None], 3, axis=-1).astype(np.uint8))
+    draw = ImageDraw.Draw(image)
+    for _, x1 in layout.white.values():
+        draw.line([(round(x1), 0), (round(x1), depth)], fill=(95, 95, 95), width=max(1, round(0.08 * layout.key_width)))
+    for x0, x1 in layout.black.values():
+        draw.rectangle([round(x0), 4, round(x1) - 1, round(0.65 * depth)], fill=(25, 25, 28))
+        bevel = 0.1 * (x1 - x0)  # the sloping sides of a black key catch the light
+        draw.rectangle([round(x0), 4, round(x0 + bevel), round(0.65 * depth)], fill=(105,) * 3)
+        draw.rectangle([round(x1 - bevel), 4, round(x1) - 1, round(0.65 * depth)], fill=(105,) * 3)
+    draw.rectangle([0, 0, style.width, 3], fill=(140, 20, 24))
+    return np.asarray(image)
+
+
+def _hands(keyboard: np.ndarray, notes: list[VideoNote], now: float, layout: _Layout) -> np.ndarray:
+    """The player's hands over a filmed keyboard, each above the notes it plays (or played last)."""
+    image = Image.fromarray(keyboard)
+    draw = ImageDraw.Draw(image)
+    depth = keyboard.shape[0]
+    for hand in ("left", "right"):
+        own = [note for note in notes if note.hand == hand]
+        if not own:
+            continue
+        sounding = [note for note in own if note.start <= now < note.end]
+        played = [note for note in own if note.start <= now]
+        chosen = sounding or played[-1:] or own[:1]
+        centre = float(np.mean([sum(_span(note.pitch, layout)) / 2 for note in chosen]))
+        reach = 1.6 * layout.key_width
+        draw.ellipse([centre - reach, 0.3 * depth, centre + reach, 1.25 * depth], fill=(226, 184, 154))
+    return np.asarray(image)
+
+
+def _film(style: Style, index: int) -> np.ndarray:
+    """The film behind the notes at frame ``index``: dimmed shots of soft colour and sharp-edged
+    shapes, a new shot every second and a half, each panning slowly sideways."""
+    shot_frames = round(1.5 * style.fps)
+    shot = _shot(style.width, style.keyboard_top, index // shot_frames)
+    pan = 2 * (index % shot_frames)
+    return shot[:, pan : pan + style.width]
+
+
+_SHOTS: dict[tuple[int, int, int], np.ndarray] = {}
+
+
+def _shot(width: int, height: int, number: int) -> np.ndarray:
+    key = (width, height, number)
+    if key not in _SHOTS:
+        rng = np.random.default_rng(number)
+        field = Image.fromarray(rng.uniform(5, 95, size=(4, 7, 3)).astype(np.uint8)).resize(
+            (width + 200, height), Image.Resampling.BICUBIC
+        )
+        draw = ImageDraw.Draw(field)
+        for _ in range(4):
+            x, y, r = rng.uniform(0, width + 200), rng.uniform(0, height), rng.uniform(0.04, 0.15) * width
+            draw.ellipse([x - r, y - 1.5 * r, x + r, y + 1.5 * r], fill=tuple(int(c) for c in rng.uniform(15, 105, 3)))
+        _SHOTS[key] = np.asarray(field)
+    return _SHOTS[key]
+
+
 def render(
     notes: list[VideoNote],
     path: Path,
@@ -179,6 +255,10 @@ def render(
     speed = top / style.seconds_on_screen
     seconds = max(note.end for note in notes) + tail
     roll = _roll(notes, style, layout, speed, seconds)
+    # With a film behind the notes, whatever the roll drew over its background (bars, their names
+    # and outlines, the octave lines) lies over the film.
+    drawn = (roll != np.array(style.background, dtype=np.uint8)).any(axis=-1, keepdims=True) if style.film else None
+    filmed_keys = _filmed_keyboard(style, layout) if style.filmed else None
     title_frames = round(style.title_seconds * style.fps)
     frames = round(seconds * style.fps)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -205,9 +285,14 @@ def render(
         offset = roll.shape[0] - top - round(now * speed)
         frame = np.empty((style.height, style.width, 3), dtype=np.uint8)
         frame[:top] = roll[offset : offset + top]
+        if drawn is not None:
+            frame[:top] = np.where(drawn[offset : offset + top], frame[:top], _film(style, index))
         sounding = [note for note in notes if note.start <= now < note.end]
         lit = {note.pitch: _colour(note, style) for note in sounding} if style.keys_light else {}
-        frame[top:] = _keyboard(style, layout, lit)
+        if filmed_keys is not None:
+            frame[top:] = _hands(filmed_keys, notes, now, layout)
+        else:
+            frame[top:] = _keyboard(style, layout, lit)
         if style.flare and sounding:
             glow = Image.new("L", (style.width, style.height), 0)
             draw = ImageDraw.Draw(glow)

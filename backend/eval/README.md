@@ -73,22 +73,22 @@ that went in, and `tests/grounded/test_piano_video.py` holds the finished score 
 | Reader alone, "Ode to Joy" at 720p (62 notes) | 62 read, every key and hand right; onset error -1.9 ms on average, 6.8 ms at most; end error 10.6 ms at most |
 | Whole pipeline on that video, score against the piece | overall 1.00 (melody, rhythm, bar placement, bass, key, meter); each hand on its own staff; 8 bars; quarter = 112 |
 
-Two real videos were used in development. Neither has a reference score, so these are
-cross-checks, not accuracy figures. Their outputs are not in the repository: both are other
+Three real videos were used in development. None has a reference score, so these are
+cross-checks, not accuracy figures. Their outputs are not in the repository: all are other
 people's arrangements of copyrighted songs.
 
-| | Rendered tutorial, 1080p60, 4:21 | Synthesia screen recording, 720p30, 4:16 |
-|---|---|---|
-| Keyboard read | A1 to A6 (61 keys); the "C4" printed on the keyboard is where middle C was put | A1 to B5 (51 keys), note names printed on every key |
-| Notes read | 929 (right hand 622, left 307) | 1407 (right hand 539, left 868) |
-| Separated from a touching note | 148 | 34 |
-| Bars whose key was seen lit | 929 of 929 | 1403 of 1407 |
-| Keys lit with no bar | 0 | 0 |
-| Octave, by agreement with the audio | as placed: 0.70, against 0.44 an octave down and 0.38 up | as placed: 0.56, against 0.44 and 0.35 |
-| Strong attacks in the audio with no note onset within 60 ms | 0 of 507 | 51 of 491 |
-| Frame-to-frame motion | even | uneven (0 to 10 rows a frame): followed frame by frame |
-| Score | E major, 4/4, quarter = 105; every note read is in it and nothing else; every note on its hand's staff | F major, 4/4, quarter = 100, the tempo the recording itself displays; every note read is in it and nothing else |
-| The same notes through the score model instead | 936 notes written for 929, three on the wrong staff, the opening triplets written as sixteenths | not run |
+| | Rendered tutorial, 1080p60, 4:21 | Synthesia screen recording, 720p30, 4:16 | Filmed keyboard, film behind the notes, 1080p60 (AV1), 4:16 |
+|---|---|---|---|
+| Keyboard read | A1 to A6 (61 keys); the "C4" printed on the keyboard is where middle C was put | A1 to B5 (51 keys), note names printed on every key | F1 to A6 (65 keys), filmed, the player's hands over it |
+| Notes read | 929 (right hand 622, left 307) | 1407 (right hand 539, left 868) | 2251 (hands split at middle C: right 1332, left 919) |
+| Separated from a touching note | 148 | 34 | 671 |
+| Bars whose key was seen lit | 929 of 929 | 1403 of 1407 | the keys do not light: not used |
+| Keys lit with no bar | 0 | 0 | not used |
+| Octave, by agreement with the audio | as placed: 0.70, against 0.44 an octave down and 0.38 up | as placed: 0.56, against 0.44 and 0.35 | as placed: 0.66, against 0.53 and 0.42 |
+| Strong attacks in the audio with no note onset within 60 ms | 0 of 507 | 51 of 491 | 21 of 656 (counted as below) |
+| Frame-to-frame motion | even | uneven (0 to 10 rows a frame): followed frame by frame | even |
+| Score | E major, 4/4, quarter = 105; every note read is in it and nothing else; every note on its hand's staff | F major, 4/4, quarter = 100, the tempo the recording itself displays; every note read is in it and nothing else | E major, 4/4, quarter = 105, 113 bars; every note read is in it, and 99.6% of its notes are notes read |
+| The same notes through the score model instead | 936 notes written for 929, three on the wrong staff, the opening triplets written as sixteenths | not run | not run |
 
 What this does and does not establish. For the first video every check agrees, and one more that
 only it allows: each bar carries exactly one printed note name. For the second, the keys agree
@@ -96,6 +96,27 @@ but a tenth of the strong attacks in its audio have no note beside them; whether
 the reader missed or something in that recording's sound was not resolved. The first video read
 again at 720p gives 929 notes of which 5 are split and 5 merged against the 1080p reading (see
 the limits pinned in `tests/unit/test_visual_reader.py`).
+
+The third video is the full arrangement of the first one's song, made differently: a real
+keyboard filmed from above with the player's hands on it, keys that do not light, and a film
+playing behind the falling notes. The reader at first refused it (`keyboard_not_found`); with
+only the keyboard found, it read 8749 notes, mostly the film. Its checks, made without the
+keys:
+
+- *Harmony with the audio* (`python -m eval.field_check`): 0.859, against 0.547 for the same
+  notes 8 s late and 0.25 transposed. For scale, a correct solo transcription gives 0.84 to
+  0.89. The 8749-note reading gave 0.574, below its own best transposition (0.631).
+- *Attacks*: local maxima of the reader's onset strength (`app.visual.audio.onset_strength`)
+  above its mean plus two standard deviations, at least 80 ms apart. 21 of 656 have no note
+  onset within 60 ms; the 8749-note reading left 104.
+- *The picture*: every note read drawn back over frames at 60, 96, 150, 211.2, 230 and 240
+  seconds. Each bar on screen has its note, named as the bar's printed name and
+  cut where the printed names say two notes touch. What is not right: in the last seconds the
+  closing credits, which appear over the notes, add about ten short notes, and the glow and
+  flares of the final chord a few more; a held note's glow adds one short note beside it at
+  230 s; and the hands, salmon and red against pale pink and lavender, differ in lightness
+  rather than hue, so they are split at middle C.
+- Notes outside E major: 20 of 2251, half of them in the last seconds.
 
 ## Score references
 

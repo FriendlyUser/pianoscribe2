@@ -34,11 +34,13 @@ from app.visual.frames import VideoInfo, probe_video, read_strips, sample_frames
 from app.visual.hands import LEFT, RIGHT, UNKNOWN, assign_hands, split_by_pitch
 from app.visual.keyboard import Keyboard, KeyboardView, find_keyboard
 from app.visual.roll import (
+    FAINT,
     SOLID,
     Bar,
     Roll,
     Zones,
     build_zones,
+    enclosed,
     frame_shifts,
     read_bars,
     reduce_strip,
@@ -113,8 +115,10 @@ class Layout:
 def plan_layout(keyboard: Keyboard, fps: float, *, band_rows: int | None = None) -> Layout:
     roll_height = keyboard.top
     period = keyboard.white_width
-    # High enough to clear the flare drawn where a note lands, low enough to stay near it.
-    lead = max(round(1.6 * period), round(0.1 * roll_height))
+    # High enough to clear the flare drawn where a note lands, low enough to stay near it. A flare
+    # bursts at the moment a note lands: in one video it reaches nearly two white keys up, over the
+    # neighbouring keys.
+    lead = max(round(2.4 * period), round(0.1 * roll_height))
     if band_rows is None:
         # Tall enough that no row of the roll slips between two frames unless the
         # whole height is crossed in under a second.
@@ -149,6 +153,57 @@ def roll_background(samples: NDArray[np.uint8], view: KeyboardView, rows: range)
     suspicious = (np.abs(own - pooled[None]) > 40).any(axis=-1)
     own[suspicious] = np.broadcast_to(pooled[None], own.shape)[suspicious]
     return own
+
+
+MOVING = 0.05  # share of a typical frame that changes far from any bar, above which a film plays behind the notes
+BAR_BRIGHT = 128  # as bright as the dimmest bar colour can be: what counts as "near a bar" when looking for a film
+
+
+def _grow(mask: NDArray[np.bool_], reach: int) -> NDArray[np.bool_]:
+    """``mask`` ([frames, rows, columns]) widened by ``reach`` pixels up, down and to either side."""
+    grown = mask
+    for axis in (1, 2):
+        size = grown.shape[axis]
+        total = np.cumsum(grown, axis=axis, dtype=np.int32)
+        total = np.concatenate((np.zeros_like(np.take(total, [0], axis=axis)), total), axis=axis)
+        upto = np.minimum(np.arange(size) + reach + 1, size)
+        since = np.maximum(np.arange(size) - reach, 0)
+        grown = (np.take(total, upto, axis=axis) - np.take(total, since, axis=axis)) > 0
+    return grown
+
+
+def _split_level(levels: NDArray[np.uint8]) -> int:
+    """The level that best splits ``levels`` into a darker and a brighter group (Otsu's threshold)."""
+    counts = np.bincount(levels.ravel(), minlength=256).astype(np.float64)
+    values = np.arange(256, dtype=np.float64)
+    below = np.cumsum(counts)
+    above = below[-1] - below
+    mean_below = np.cumsum(counts * values) / np.maximum(below, 1.0)
+    mean_above = ((counts * values).sum() - np.cumsum(counts * values)) / np.maximum(above, 1.0)
+    return int(np.argmax(below * above * (mean_below - mean_above) ** 2)) + 1
+
+
+def backdrop_floor(samples: NDArray[np.uint8], view: KeyboardView) -> int | None:
+    """How bright the bars are, when a film plays behind the notes; None when the picture there holds still.
+
+    Behind the notes of most tutorials is a still picture, nearly black: whatever differs from it
+    is a bar, its outline or its name. Some videos play a film behind the notes instead, dimmed
+    so that the bars stand out. Then a typical frame differs from the still picture (the median
+    of the sampled frames) in large areas far from anything as bright as a bar, which a still
+    picture never does; and only brightness tells a bar from the film. The level returned is
+    the one that best splits the brightness (the strongest channel) of everything that changed.
+    """
+    keyboard = view.keyboard
+    rows = np.arange(int(0.15 * keyboard.top), int(0.85 * keyboard.top), 2)
+    picture = samples[view.usable][:, rows, ::2]  # every other row and column is plenty
+    still = np.median(picture, axis=0).astype(np.int16)
+    level = picture.max(axis=-1)
+    changed = np.abs(picture.astype(np.int16) - still[None]).max(axis=-1) > FAINT
+    near = _grow(level >= BAR_BRIGHT, max(1, round(0.125 * keyboard.white_width)))  # a quarter of a white key
+    away = (changed & ~near).mean(axis=(1, 2))
+    if len(away) == 0 or float(np.median(away)) < MOVING or not changed.any():
+        return None
+    return _split_level(level[changed])
 
 
 @dataclass
@@ -188,7 +243,10 @@ def read_all_frames(
     zones: Zones,
     layout: Layout,
     progress: Progress | None = None,
+    *,
+    floor: int | None = None,
 ) -> Readings:
+    """One pass over every frame. ``floor``: how bright a bar is, when a film plays behind the notes."""
     keyboard = view.keyboard
     band = range(layout.band_top - layout.above, layout.band_top + layout.band_rows)
     speed = range(layout.speed_top, layout.speed_top + SPEED_ROWS)
@@ -204,6 +262,9 @@ def read_all_frames(
     key_rows = slice(tall + SPEED_ROWS, tall + SPEED_ROWS + KEY_ROWS)
     most = min(tall // 2, 3 * layout.band_rows)  # the furthest the picture can be followed from frame to frame
     last_mask: NDArray[np.bool_] | None = None
+    # In front of a film: the widest dark stroke inside a bar (its outline, the note name printed
+    # on it), side to side and up and down. The film between two separate bars is wider than that.
+    across, along = max(3, round(0.3 * keyboard.white_width)), max(2, round(0.2 * keyboard.white_width))
 
     profile = _key_profile(zones, keyboard)
     usable = profile >= 0
@@ -239,11 +300,26 @@ def read_all_frames(
         # How far the picture moved since the frame before, from the tall strip (every sixth column is plenty).
         thin = chunk[:, :tall, ::6].astype(np.int16) - background[None, :tall, ::6]
         masks = (np.abs(thin) > SOLID).any(axis=-1)
+        ignore = covered = None
+        if floor is not None:
+            # Behind the notes, a pixel dimmer than a bar is the film; the keys are read as they are.
+            dim = chunk[:, : tall + SPEED_ROWS].max(axis=-1) < floor
+            masks &= ~dim[:, :tall, ::6]
+            # The band and, for the gaps up and down, the rows just above it: a gap reaching further
+            # up is longer than ``along`` and stays open whatever lies there.
+            context = min(layout.above, along)
+            inside = enclosed(dim[:, layout.above - context : tall], across, along)[:, context:]
+            ignore = np.zeros(chunk.shape[:3], dtype=bool)[:, layout.above :]
+            ignore[:, : layout.band_rows + SPEED_ROWS] = dim[:, layout.above :]
+            covered = np.zeros_like(ignore)
+            covered[:, : layout.band_rows] = inside
         joined = masks if last_mask is None else np.concatenate((last_mask[None], masks))
         moved = frame_shifts(joined, most)
         parts["moved"].append(moved if last_mask is not None else np.concatenate(([np.nan], moved)).astype(np.float32))
         last_mask = masks[-1]
-        stats = reduce_strip(chunk[:, layout.above :], background[layout.above :], zones)
+        stats = reduce_strip(
+            chunk[:, layout.above :], background[layout.above :], zones, ignore=ignore, covered=covered
+        )
         band_rows_cut = slice(0, layout.band_rows)
         speed_rows_cut = slice(layout.band_rows, layout.band_rows + SPEED_ROWS)
         key_rows_cut = slice(layout.band_rows + SPEED_ROWS, layout.band_rows + SPEED_ROWS + KEY_ROWS)
@@ -363,6 +439,9 @@ def _runs(mask: NDArray[np.bool_]) -> list[tuple[int, int]]:
     return [(int(a), int(b)) for a, b in zip(edges[::2], edges[1::2], strict=True)]
 
 
+KEYS_AGREE = 0.5  # share of bars whose key must be seen lit for the keys to count as lighting up
+
+
 @dataclass
 class KeyCheck:
     shift: float  # frames to add to a bar's time so that it is struck when its key lights
@@ -414,6 +493,10 @@ def check_against_keys(bars: list[Bar], roll: Roll, readings: Readings) -> KeyCh
             around = lit[max(0, int(np.floor(a)) - 1) : min(frames, int(np.ceil(b)) + 2), bar.key]
             confirmed[i] = bool(around.any())
         explained[max(0, int(np.floor(a)) - 2) : min(frames, int(np.ceil(b)) + 3), bar.key] = True
+    if confirmed.mean() < KEYS_AGREE:
+        # Most bars land on a key that stays as it was: the keys do not light, and what changed on
+        # them was something else (the player's hands over a filmed keyboard). They say nothing.
+        return KeyCheck(0.0, 0, np.zeros(len(bars), dtype=bool), [], keys_light=False)
     unexplained = []
     for key in range(lit.shape[1]):
         for a, b in _runs(lit[:, key] & ~explained[:, key]):
@@ -442,8 +525,9 @@ def read_video(
     keyboard = view.keyboard
     zones = build_zones(keyboard)
     layout = plan_layout(keyboard, info.fps)
+    floor = backdrop_floor(samples, view)
     readings = read_all_frames(
-        video, info, settings, samples, view, zones, layout, lambda f, m: report(0.05 + 0.75 * f, m)
+        video, info, settings, samples, view, zones, layout, lambda f, m: report(0.05 + 0.75 * f, m), floor=floor
     )
     speed = measure_speed(readings, zones, layout, info, keyboard.top)
     seen_moving = readings.moved[readings.present & ~np.isnan(readings.moved)]
@@ -452,7 +536,7 @@ def read_video(
         # The notes fall further in a frame than the strip is tall: rows would slip between frames. Read again, taller.
         layout = plan_layout(keyboard, info.fps, band_rows=int(np.ceil(max(2 * speed, fastest + 2))) + 2)
         readings = read_all_frames(
-            video, info, settings, samples, view, zones, layout, lambda f, m: report(0.05 + 0.75 * f, m)
+            video, info, settings, samples, view, zones, layout, lambda f, m: report(0.05 + 0.75 * f, m), floor=floor
         )
         speed = measure_speed(readings, zones, layout, info, keyboard.top)
     del samples
@@ -566,6 +650,9 @@ def read_video(
             "rows_per_second": round(speed * info.fps, 2),
             "steady": steady,
             "seconds_on_screen": round(keyboard.top / (speed * info.fps), 2),
+            "film_behind": floor is not None,
+            "bar_brightness": floor,
+            "keyboard_shown": round(float(present.mean()), 4),
         },
         "notes": {
             "total": len(notes),

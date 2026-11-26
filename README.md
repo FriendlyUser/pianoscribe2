@@ -55,11 +55,14 @@ down by rule, so the score is held to a stricter standard: the notes shown, all 
 | The same video through the whole pipeline, against the piece | overall 1.00: every note in its bar, at its beat, with its length, on the staff of its hand; key, meter and tempo exact |
 
 Real videos have no reference score, so each reading is cross-checked three ways instead (the
-keys lighting up, the attacks in the audio, the pitch of the audio); the two videos the reader was
-developed on, and what those checks can and cannot show, are in
+keys lighting up, the attacks in the audio, the pitch of the audio); the three videos the reader
+was developed on, and what those checks can and cannot show, are in
 [backend/eval/README.md](backend/eval/README.md#piano-tutorial-videos). In short: a 1080p video
 read to 929 notes with every check passing; lower resolutions and screen recordings read with a
-few notes in a hundred in doubt. See also [Known limitations](ARCHITECTURE.md#known-limitations).
+few notes in a hundred in doubt; a filmed keyboard whose keys do not light, with a film playing
+behind the notes, read to 2251 notes that agree with its audio as a correct transcription does,
+with a few false notes where text and glow come over the notes at the end. See also
+[Known limitations](ARCHITECTURE.md#known-limitations).
 
 A field test on four more recordings from anime and visual novels (two songs, two piano solos)
 had key, meter and tempo right on all four; the method and numbers are in

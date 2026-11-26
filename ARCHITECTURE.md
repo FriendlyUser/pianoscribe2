@@ -100,17 +100,34 @@ next section.
    removes falling notes and lit keys. The band of black keys has a row pattern nothing else in a
    frame has; the lines between white keys lie on a lattice; black keys sit on five of every seven
    boundaries, a pattern with no symmetry, which names every key. Note names printed on the keys
-   do not disturb this.
+   do not disturb this. Some tutorials film a real keyboard, with the player's hands on it and
+   the notes drawn above: its rows are shaded, so about a fifth of each is neither clearly white
+   nor clearly black, and a black key is wherever the picture is nearer black than white (its
+   sloping sides catch the light). Where the hands rest most of the time they stay in the median;
+   those columns (coloured, where keys are grey) are left out of the pattern, and the black keys
+   under them placed where the others of their kind are.
 2. **Roll** (`roll.py`). The notes scroll down at the speed of the music, so the video is a piano
    roll seen through a moving window. Every frame contributes a thin strip a little above the
    keyboard (above the flare drawn where notes land), and the strips are laid end to end by how
    far each still has to travel. One row of the rebuilt roll is one pixel of travel: 4 ms in a
    1080p video. A screen recording repeats and skips frames, so how far the picture really moved
    between two frames is measured rather than assumed (one of the two development videos moves
-   0, 3, 9, 6, 1 ... rows from frame to frame).
+   0, 3, 9, 6, 1 ... rows from frame to frame). The strip is 2.4 white keys above the keyboard,
+   clear of the flare that bursts where a note lands (nearly two white keys high in the third
+   development video).
+
+   Behind the notes is usually a still, nearly black picture, and whatever differs from it is a
+   bar. Some videos play a dimmed film there instead. That is recognised in the sampled frames:
+   they differ from their median in large areas far from anything as bright as a bar. Then only
+   brightness tells a bar from the film, and a pixel counts only above the level that best splits
+   the brightness of everything that changed (142 in the third development video, whose film
+   peaks near 120 and whose bars start near 150). The dark outlines and the dark strokes of the
+   note names inside a bar are as dim as the film; they are counted all the same where they fill
+   a short gap between bright parts of a bar, shorter than the film between two bars.
 3. **Bars.** Each key is read in the columns no other key's bar can cover; a black key's bar lies
-   over the edges of two white keys and is read in two parts. A bar is there wherever its key's
-   columns are not background. Two bars that touch (a quarter of all notes in the first
+   over the edges of two white keys and is read in two parts (a black key that lies almost all
+   over one neighbour has no part over the other; beside that neighbour sounding, its bar is
+   told by its own colour). A bar is there wherever its key's columns are not background. Two bars that touch (a quarter of all notes in the first
    development video) are told apart by the notch their rounded corners leave at the sides,
    which the note name printed inside a bar never reaches.
 4. **Hands** (`hands.py`) from the colour of the bars, compared on hue so that the darker shade
@@ -118,7 +135,8 @@ next section.
 5. **Checks** (`reader.py`, `audio.py`), reported with every result:
    - *the keys*: the video lights each key while its note sounds, a second reading of the same
      notes from another part of the picture. Every bar is compared with it, and it fixes the
-     moment a bar counts as struck;
+     moment a bar counts as struck. When most bars find their key unlit, the keys do not light
+     (a filmed keyboard, where what changes on the keys is the player's hands) and are not used;
    - *the audio*: the notes are laid over the spectrum of the recording at each candidate octave.
      A keyboard that is not a full 88 keys looks the same an octave up; the true octave is where
      the notes' fundamentals and overtones meet the sound. Onsets are then timed against the
@@ -366,21 +384,34 @@ with its outcome; per-stage timings are stored on the job record and returned by
     line between the bars is read instead, less reliably: the first development video, read at
     720p instead of 1080p, comes out with 5 notes merged and 5 split in 929. A note name printed
     across a narrow black-key bar can read as such a line. Both limits are pinned by
-    expected-failure tests. YouTube videos are fetched at up to 1080p for this reason.
+    expected-failure tests. YouTube videos are fetched at up to 1080p for this reason. Even at
+    1080p, whether the name on a black-key bar is taken for a seam depends on where its strokes
+    fall against the rows read: in the rendered fixture of
+    `test_long_notes_with_their_names_printed_on_them_stay_whole`, F#4 is split with the strip
+    1.8, 2.2 or 2.6 white keys above the keyboard, and read whole at 1.6, 2.0 or 2.4.
   - Real videos have no reference score. The checks made on every reading (keys, audio, score)
     show that the notes read are the notes shown; they cannot show it note by note for the
     lengths, and a renderer that does not light its keys leaves only the audio.
   - Bar lines, meter, tempo and key are still heard, not read: the limits above for the beat
     model and the key tracker apply (the first development video has one 3/4 bar among 4/4
     that may not be the arranger's).
-  - The video must be of the usual kind: a keyboard along the bottom, bars falling onto it. A
-    camera on a real piano, a keyboard that moves or zooms, and notes that rise are not read.
+  - The video must be of the usual kind: a keyboard along the bottom, bars falling onto it. The
+    keyboard may be filmed, with the hands on it, if the bars are drawn above it; a camera on a
+    piano with no bars drawn, a keyboard that moves or zooms, and notes that rise are not read.
+  - With a film behind the notes, anything as bright as a bar is read as one: in the last
+    seconds of the third development video, the closing credits that appear over the notes add
+    about ten short notes, and the glow of the final chords a few more. A flare that reaches
+    more than 2.4 white keys above the keyboard would add notes beside the one landing.
   - Written by rule, the score has no dynamics, pedal or articulation, at most two voices per
     hand (a third is cut short where it would begin; the count is reported), nothing shorter
     than a sixth of a beat, and more ties than an engraver would use.
-  - A video that draws both hands in one colour is split at middle C.
-  - The YouTube route for videos (`download_video`) could not be run where this was built, and
-    the web form's new option was type-checked but not exercised in a browser.
+  - A video that draws both hands in one colour is split at middle C, and so is one whose hands
+    differ in lightness rather than hue: the third development video draws the left hand salmon
+    and red, the right pale pink and lavender, 34 degrees of hue apart where 40 are asked for.
+    Its left-hand notes above middle C go on the upper staff.
+  - The YouTube route for videos (`download_video`) has been run from a home connection (a 4:16
+    1080p60 video, AV1, fetched in about 25 seconds); from servers YouTube often refuses
+    (`youtube_blocked`). The web form's option was type-checked but not exercised in a browser.
 
 **System**
 

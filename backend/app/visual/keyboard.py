@@ -30,6 +30,11 @@ from app.errors import JobError
 
 BRIGHT = 170  # grey level above which a pixel is a white key front
 DARK = 75  # grey level below which a pixel is a black key
+# Share of a row of the keyboard that is clearly one of its two tones. A drawn keyboard is all
+# but entirely bright or dark; a filmed one has shading on its white keys, reflections on its
+# black keys and the player's hands over both, which leave about a fifth of a row in between.
+TWO_TONE = 0.72
+HIDDEN_CHROMA = 40  # spread between the strongest and weakest channel above which a pixel is not a key (skin)
 WHITE_SEMITONES = (0, 2, 4, 5, 7, 9, 11)  # C D E F G A B
 # Whether a black key sits on the boundary to the right of each white key, C to B.
 BLACK_AFTER = (True, True, False, True, True, True, False)
@@ -106,7 +111,7 @@ def keyboard_rows(gray: Gray) -> tuple[int, int, int] | None:
     dark_share = dark.mean(axis=1)
     changes = (bright[:, 1:] != bright[:, :-1]).sum(axis=1)
     black_band = (
-        (bright_share > 0.3) & (bright_share < 0.8) & (dark_share > 0.2) & (bright_share + dark_share > 0.82)
+        (bright_share > 0.3) & (bright_share < 0.8) & (dark_share > 0.2) & (bright_share + dark_share > TWO_TONE)
     ) & (changes >= 24)
     runs = [run for run in _runs(black_band) if run[1] - run[0] >= max(8, 0.04 * height)]
     if not runs:
@@ -116,7 +121,7 @@ def keyboard_rows(gray: Gray) -> tuple[int, int, int] | None:
     for start, stop in _runs(black_band):
         if 0 < start - end <= max(3, 0.2 * (end - top)):
             end = stop
-    white_band = bright_share > 0.8
+    white_band = bright_share > TWO_TONE
     below = [run for run in _runs(white_band) if 0 <= run[0] - end <= max(4, 0.01 * height)]
     if not below:
         return None
@@ -163,17 +168,40 @@ def _white_boundaries(fronts: Gray, width: int) -> tuple[float, float] | None:
 def _black_keys(band: Gray, period: float) -> list[tuple[float, float]]:
     """Left and right edges of each black key seen whole in the black-key band."""
     profile = np.median(band, axis=0)
+    # A black key is where the picture is nearer black than white. On a filmed keyboard the sloping
+    # sides of the black keys catch the light: a fixed dark level finds only their middles.
+    dark, light = np.percentile(profile, [5, 90])
     spans = []
-    for start, stop in _runs(profile < DARK + 25):
+    for start, stop in _runs(profile < max(DARK + 25, (dark + light) / 2.0)):
         if 0.3 * period <= stop - start <= 0.95 * period and start > 0 and stop < band.shape[1]:
             spans.append((float(start), float(stop)))
     return spans
 
 
-def measure_keyboard(clean: Gray, rows: tuple[int, int, int]) -> Keyboard:
-    """Name every key of a keyboard picture with no lit keys (``clean`` is one grey frame)."""
+def hidden_columns(clean: NDArray[np.uint8], rows: tuple[int, int, int]) -> NDArray[np.bool_]:
+    """Columns where something coloured lies over the black keys in ``clean`` ([rows, columns, 3]).
+
+    Keys are white, grey or black. A filmed keyboard has the player's hands over it, and where
+    they rest most of the time they are in the clean picture too, hiding the keys under them.
+    """
+    top, black_bottom, _ = rows
+    depth = black_bottom - top + 1
+    band = clean[top + int(0.15 * depth) : top + int(0.6 * depth)].astype(np.int16)
+    chroma = band.max(axis=-1) - band.min(axis=-1)
+    hidden: NDArray[np.bool_] = (chroma > HIDDEN_CHROMA).mean(axis=0) > 0.3
+    return hidden
+
+
+def measure_keyboard(clean: Gray, rows: tuple[int, int, int], hidden: NDArray[np.bool_] | None = None) -> Keyboard:
+    """Name every key of a keyboard picture with no lit keys (``clean`` is one grey frame).
+
+    ``hidden`` marks columns where the keys cannot be seen (hands over them): the pattern of
+    black keys is matched where they can.
+    """
     top, black_bottom, bottom = rows
     height, width = clean.shape
+    if hidden is None:
+        hidden = np.zeros(width, dtype=bool)
     failure = JobError(
         "keyboard_not_found",
         "No piano keyboard could be read in this video. The piano-video option needs a tutorial video with "
@@ -200,7 +228,11 @@ def measure_keyboard(clean: Gray, rows: tuple[int, int, int]) -> Keyboard:
             black_at[n] = (x0, x1)
 
     # White key j lies between boundaries j and j+1. Find which white key is a C.
-    checked = [n for n in boundaries if 0.5 * period < boundaries[n] < width - 0.5 * period]
+    def seen(n: int) -> bool:
+        a, b = int(boundaries[n] - 0.35 * period), int(boundaries[n] + 0.35 * period) + 1
+        return not hidden[max(0, a) : min(width, b)].any()
+
+    checked = [n for n in boundaries if 0.5 * period < boundaries[n] < width - 0.5 * period and seen(n)]
     scores = []
     for offset in range(7):
         agree = sum((n in black_at) == BLACK_AFTER[(n - 1 + offset) % 7] for n in checked)
@@ -209,6 +241,20 @@ def measure_keyboard(clean: Gray, rows: tuple[int, int, int]) -> Keyboard:
     ranked = sorted(scores, reverse=True)
     if ranked[0] < 0.9 or ranked[0] - ranked[1] < 0.15 or len(checked) < 7:
         raise failure
+    # A black key under a hand: where the pattern puts one, with the width and the place
+    # beside its boundary that the black keys of its kind have where they can be seen.
+    widths = [x1 - x0 for x0, x1 in black_at.values()]
+    places: dict[int, list[float]] = {}
+    for n, (x0, x1) in black_at.items():
+        places.setdefault((n - 1 + offset) % 7, []).append((x0 + x1) / 2.0 - boundaries[n])
+    for n in boundaries:
+        kind = (n - 1 + offset) % 7
+        if n in black_at or not BLACK_AFTER[kind] or seen(n):
+            continue
+        centre = boundaries[n] + float(np.median(places.get(kind, [0.0])))
+        half = float(np.median(widths)) / 2.0
+        if centre - half > 0 and centre + half < width:
+            black_at[n] = (centre - half, centre + half)
 
     whites = [j for j in range(first, last) if min(boundaries[j + 1], width) - max(boundaries[j], 0) >= 0.4 * period]
     cs = [j for j in whites if (j + offset) % 7 == 0]
@@ -260,5 +306,6 @@ def find_keyboard(frames: NDArray[np.uint8]) -> KeyboardView:
     if usable.sum() < 3:
         raise JobError("keyboard_not_found", "The keyboard in this video moves; its keys could not be read.")
     clean = np.median(frames[usable], axis=0).astype(np.uint8)
-    keyboard = measure_keyboard(clean.astype(np.float32).mean(axis=-1), (typical[0], typical[1], typical[2]))
+    rows = (typical[0], typical[1], typical[2])
+    keyboard = measure_keyboard(clean.astype(np.float32).mean(axis=-1), rows, hidden_columns(clean, rows))
     return KeyboardView(keyboard, usable, clean)
