@@ -52,6 +52,32 @@ def onset_strength(audio: NDArray[np.float32], rate: int, *, size: int = 1024, h
     return np.concatenate(([0.0], rise)), rate / hop
 
 
+def attack_times(audio: NDArray[np.float32], rate: int, *, apart: float = 0.08, within: float = 0.06) -> list[float]:
+    """Seconds of the strong attacks in ``audio``: where the sound's rise jumps, inside ``within`` seconds,
+    by more than its usual level (its mean plus two standard deviations); the strongest of any
+    closer together than ``apart``.
+
+    The jump, not the level: while a chord rings the rise ripples on at about that level for
+    some tenths of a second, and a peak of the ripple is no note.
+    """
+    strength, per_second = onset_strength(audio, rate)
+    level = float(strength.mean() + 2.0 * strength.std())
+    back = max(1, int(round(within * per_second)))
+    kept: list[int] = []
+    for i in range(1, len(strength) - 1):
+        if strength[i] < strength[i - 1] or strength[i] <= strength[i + 1]:
+            continue
+        if strength[i] - float(strength[max(0, i - back) : i].min()) < level:
+            continue
+        if kept and (i - kept[-1]) / per_second < apart:
+            if strength[i] > strength[kept[-1]]:
+                kept[-1] = i
+        else:
+            kept.append(i)
+    # As in ``audio_offset``: a frame's rise is measured between two windows, half a hop before its centre.
+    return [(i - 0.5) / per_second for i in kept]
+
+
 @dataclass(frozen=True)
 class Offset:
     seconds: float  # add this to the notes' times to put them on the audio's clock

@@ -38,6 +38,52 @@ def signature_from_notes(pitches: list[int]) -> int:
     return max(range(-6, 7), key=lambda fifths: (inside(fifths), -abs(fifths)))
 
 
+def mark_tempos(measures: list, starts: list[float], end: float, steady: object | None) -> list[tuple[int, int]] | None:
+    """Metronome marks from the bars' own lengths, where the notes keep a steady beat; the marks set (bar, tempo).
+
+    A beat fitted to the notes gives each bar's tempo to a tenth of a beat a minute, so a tempo
+    is marked as it is (106, not the 105 a metronome has) and each lasting change of it is
+    marked where it happens. A bar or two slower than what went before, between marks, is a
+    ritardando. Returns None, having done nothing, when the notes keep no steady beat.
+    """
+    stretches = getattr(steady, "stretches", None) or []
+    if not stretches:
+        return None
+    fine = float(np.median([s["scatter_ms"] for s in stretches])) <= 5.0
+    apart, lasting = (0.012, 2) if fine else (0.03, 4)
+    edges = [*starts, end]
+    tempos = []
+    for k, measure in enumerate(measures):
+        middle = (edges[k] + edges[k + 1]) / 2.0
+        inside = [s for s in stretches if s["start"] <= middle <= s["end"]]
+        tempos.append(float(inside[0]["bpm"]) if inside else 60.0 * float(measure.length) / (edges[k + 1] - edges[k]))
+    runs: list[tuple[int, int, float]] = []  # first bar, bar after the last, tempo
+    first = 0
+    for k in range(1, len(tempos) + 1):
+        if k == len(tempos) or abs(tempos[k] / float(np.median(tempos[first:k])) - 1.0) > apart:
+            runs.append((first, k, float(np.median(tempos[first:k]))))
+            first = k
+    for measure in measures:
+        measure.directions = [d for d in measure.directions if not d[1].startswith(("metronome_", "tempo_"))]
+        measure.tempos = []
+    long = [run for run in runs if run[1] - run[0] >= lasting]
+    shown = round(long[0][2] if long else float(np.median(tempos)))
+    measures[0].directions.insert(0, (Fraction(0), f"metronome_quarter_{shown}"))
+    marks = [(0, shown)]
+    steady_tempo = float(shown)
+    for a, b, tempo in runs:
+        measures[a].tempos = [(Fraction(0), tempo)]  # what is played, bar by bar
+        if b - a >= lasting:
+            if round(tempo) != shown and a > 0:
+                shown = round(tempo)
+                measures[a].directions.insert(0, (Fraction(0), f"metronome_quarter_{shown}"))
+                marks.append((a, shown))
+            steady_tempo = tempo
+        elif a > 0 and tempo < 0.96 * steady_tempo and b < len(measures):
+            measures[a].directions.insert(0, (Fraction(0), "tempo_rit"))
+    return marks
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--notes", required=True, help="notes read from the video (app.visual: visual.json)")
@@ -95,7 +141,9 @@ def main() -> None:
         if len(starts) > 1
         else last.seconds + 2.0
     )
-    apply_bar_tempos(measures, SimpleNamespace(bar_seconds=np.array([*starts, end])), 0)
+    marks = mark_tempos(measures, starts, end, plan.steady)
+    if marks is None:
+        apply_bar_tempos(measures, SimpleNamespace(bar_seconds=np.array([*starts, end])), 0)
     write_musicxml(measures, Path(args.out), title=args.title)
     facts = {
         "notes": plan.notes,
@@ -104,6 +152,17 @@ def main() -> None:
         "notes_off_the_grid": plan.off_grid,
         "notes_cut_short": plan.cut_short,
         "voices": plan.voices,
+        "notes_on_the_other_staff": plan.shared,
+        "tempo_marks": [{"bar": bar + 1, "quarter": tempo} for bar, tempo in marks or []],
+        "steady_beat": {
+            "beats_from_the_notes": sum(plan.steady.fitted),
+            "beats_from_the_tracker": len(plan.steady.fitted) - sum(plan.steady.fitted),
+            "bars_counted": plan.steady.regular_bars,
+            "bars_as_tracked": plan.steady.tracked_bars,
+            "stretches": plan.steady.stretches,
+        }
+        if plan.steady is not None
+        else None,
     }
     print(f"@@facts {json.dumps(facts)}", flush=True)
     print(f"{len(measures)} measures, {plan.notes} notes -> {args.out}")

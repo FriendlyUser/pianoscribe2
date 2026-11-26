@@ -34,6 +34,7 @@ from app.visual.frames import VideoInfo, probe_video, read_strips, sample_frames
 from app.visual.hands import LEFT, RIGHT, UNKNOWN, assign_hands, split_by_pitch
 from app.visual.keyboard import Keyboard, KeyboardView, find_keyboard
 from app.visual.roll import (
+    DEEP_NOTCH,
     FAINT,
     SOLID,
     Bar,
@@ -41,6 +42,7 @@ from app.visual.roll import (
     Zones,
     build_zones,
     enclosed,
+    faint_notches,
     frame_shifts,
     read_bars,
     reduce_strip,
@@ -489,6 +491,106 @@ def drop_overlays(bars: list[Bar], keyboard: Keyboard, tolerance: float) -> tupl
     return [bar for i, bar in enumerate(bars) if i not in dropped], len(dropped)
 
 
+SLIVER = 0.06  # seconds: shorter than any note that is struck again at once (a 32nd note at 120 is 0.0625)
+
+
+def merge_slivers(bars: list[Bar], shortest: float) -> tuple[list[Bar], int]:
+    """(``bars`` with slivers joined back, how many were). ``shortest``: roll rows below which a piece is a sliver.
+
+    Where a bar's note name or a blemish of the encoding reads as the seam between two touching
+    bars, one note comes out as two, one of them a few rows long. No key is struck twice within
+    a twentieth of a second: a piece that short, touching another on its key, is part of it.
+    """
+    by_key: dict[int, list[Bar]] = {}
+    for bar in sorted(bars, key=lambda b: (b.key, b.start)):
+        by_key.setdefault(bar.key, []).append(bar)
+    out: list[Bar] = []
+    merged = 0
+    for members in by_key.values():
+        kept = [members[0]]
+        for bar in members[1:]:
+            before = kept[-1]
+            touching = bar.start - before.end <= 1.5
+            if touching and min(bar.end - bar.start, before.end - before.start) < shortest:
+                longer = before if before.end - before.start >= bar.end - bar.start else bar
+                kept[-1] = Bar(before.key, before.start, bar.end, longer.colour, before.joined, longer.doubtful)
+                merged += 1
+            else:
+                kept.append(bar)
+        out += kept
+    out.sort(key=lambda b: (b.start, b.key))
+    return out, merged
+
+
+HEARD = 0.06  # seconds within which a seam and an attack in the audio are the same moment
+FAINT_APART = 0.09  # seconds a faint seam must lie from either end of its bar (a sixteenth at 160 to the minute)
+
+
+def split_at_faint_seams(
+    bars: list[Bar],
+    notches: list[tuple[int, float, float]],
+    roll: Roll,
+    fps: float,
+    audio: tuple[NDArray[np.float32], int] | None,
+    *,
+    together: float,
+) -> tuple[list[Bar], dict[str, int]]:
+    """(``bars`` cut at the faint seams that something else confirms, how many by which sign).
+
+    Two bars that touch are told apart by their rounded corners; in a small picture a seam can
+    leave too faint a notch to cut on, and two notes are read as one. ``notches`` are those
+    faint places (``faint_notches``: bar, row, depth). One is a seam when
+
+    * it is deep, though short of what a seam is cut on outright (``DEEP_NOTCH``); or
+    * another bar has one at the same moment (within ``together`` rows): a chord struck again; or
+    * it divides its bar into pieces as long as a bar touching it on the same key: one more of a
+      run of repeated notes; or
+    * the audio has a strong attack there that no note read so far accounts for.
+    """
+    spare = np.zeros(0)
+    offset = None
+    if audio is not None:
+        samples, rate = audio
+        onsets = [float(roll.clock_of(bar.start)) / fps for bar in bars]
+        offset = sound.audio_offset(onsets, samples, rate)
+        if offset is not None and offset.reliable:
+            struck = np.array(sorted(onsets)) + offset.seconds
+            spare = np.array([t for t in sound.attack_times(samples, rate) if np.abs(struck - t).min() > HEARD])
+    cuts: dict[int, list[float]] = {}
+    signs = {"deep": 0, "together": 0, "run": 0, "heard": 0}
+    touching: dict[int, list[float]] = {}  # per bar: the lengths of the bars it touches on its key
+    by_key: dict[int, list[int]] = {}
+    for number in sorted(range(len(bars)), key=lambda i: bars[i].start):
+        by_key.setdefault(bars[number].key, []).append(number)
+    for members in by_key.values():
+        for one, next_one in zip(members, members[1:], strict=False):
+            if bars[next_one].start - bars[one].end <= 1.5:
+                touching.setdefault(one, []).append(bars[next_one].end - bars[next_one].start)
+                touching.setdefault(next_one, []).append(bars[one].end - bars[one].start)
+    for number, row, depth in notches:
+        others = [
+            r for n, r, _ in notches if n != number and bars[n].key != bars[number].key and abs(r - row) <= together
+        ]
+        pieces = (row - bars[number].start, bars[number].end - row)
+        run = any(
+            min(abs(piece - length) for piece in pieces) <= 0.2 * length and min(pieces) >= 0.75 * length
+            for length in touching.get(number, [])
+        )
+        heard = False
+        if offset is not None and len(spare):
+            heard = bool(np.abs(spare - (float(roll.clock_of(row)) / fps + offset.seconds)).min() <= HEARD)
+        sign = "deep" if depth >= DEEP_NOTCH else "together" if others else "run" if run else "heard" if heard else None
+        if sign is not None:
+            cuts.setdefault(number, []).append(row)
+            signs[sign] += 1
+    out: list[Bar] = []
+    for number, bar in enumerate(bars):
+        edges = [bar.start, *sorted(cuts.get(number, [])), bar.end]
+        for piece, (a, b) in enumerate(zip(edges, edges[1:], strict=False)):
+            out.append(Bar(bar.key, a, b, bar.colour, bar.joined if piece == 0 else True, bar.doubtful))
+    return out, signs
+
+
 KEYS_AGREE = 0.5  # share of bars whose key must be seen lit for the keys to count as lighting up
 
 
@@ -596,9 +698,19 @@ def read_video(
     shown, even, steady = scroll_positions(readings, speed, info.fps)
     roll = unroll_readings(readings, shown, even, layout)
     least_rows = max(3, int(round(0.02 * info.fps * speed)))  # nothing shorter than a fiftieth of a second
-    bars, overlays = drop_overlays(
-        read_bars(roll, zones, keyboard, least_rows=least_rows), keyboard, tolerance=3.0 * speed
+    bars, slivers = merge_slivers(read_bars(roll, zones, keyboard, least_rows=least_rows), SLIVER * info.fps * speed)
+    bars, overlays = drop_overlays(bars, keyboard, tolerance=3.0 * speed)
+    notches = faint_notches(
+        roll,
+        zones,
+        keyboard,
+        bars,
+        # A bar's own rounded ends and the shading at its foot reach some rows in: a faint seam leaves
+        # a piece on either side longer than the shortest note there is to separate.
+        least=max(least_rows, int(np.ceil(FAINT_APART * info.fps * speed))),
+        wide=max(4, int(np.ceil(HEARD * info.fps * speed))),
     )
+    bars, faint = split_at_faint_seams(bars, notches, roll, info.fps, audio, together=max(2.0, 0.02 * info.fps * speed))
     if not bars:
         raise JobError(
             "no_notes_found",
@@ -718,6 +830,8 @@ def read_video(
             "between_two_sounding_keys": sum(bar.doubtful for bar in bars),
             "from_lit_keys_only": recovered,
             "overlay_bars_dropped": overlays,
+            "slivers_joined": slivers,
+            "separated_at_faint_seams": faint,
         },
         "key_check": {
             "keys_light": check.keys_light,

@@ -80,43 +80,54 @@ people's arrangements of copyrighted songs.
 | | Rendered tutorial, 1080p60, 4:21 | Synthesia screen recording, 720p30, 4:16 | Filmed keyboard, film behind the notes, 1080p60 (AV1), 4:16 |
 |---|---|---|---|
 | Keyboard read | A1 to A6 (61 keys); the "C4" printed on the keyboard is where middle C was put | A1 to B5 (51 keys), note names printed on every key | F1 to A6 (65 keys), filmed, the player's hands over it |
-| Notes read | 929 (right hand 622, left 307) | 1407 (right hand 539, left 868) | 2251 (hands split at middle C: right 1332, left 919) |
-| Separated from a touching note | 148 | 34 | 671 |
-| Bars whose key was seen lit | 929 of 929 | 1403 of 1407 | the keys do not light: not used |
+| Notes read | 929 (right hand 622, left 307) | 1415 (right hand 549, left 866) | 2251 (hands split at middle C: right 1332, left 919) |
+| Separated from a touching note | 154 | 58 (12 of them at faint seams) | 671 |
+| Bars whose key was seen lit | 929 of 929 | 1412 of 1415 | the keys do not light: not used |
 | Keys lit with no bar | 0 | 0 | not used |
 | Octave, by agreement with the audio | as placed: 0.70, against 0.44 an octave down and 0.38 up | as placed: 0.56, against 0.44 and 0.35 | as placed: 0.66, against 0.53 and 0.42 |
-| Strong attacks in the audio with no note onset within 60 ms | 0 of 507 | 51 of 491 | 21 of 656 (counted as below) |
+| Attacks in the audio (jumps in its rise) with no note onset within 60 ms | 0 of 689 | 6 of 363, none beyond 150 ms | 21 of 656 (counted the earlier way, as below) |
 | Frame-to-frame motion | even | uneven (0 to 10 rows a frame): followed frame by frame | even |
-| Score | E major, 4/4, quarter = 105; every note read is in it and nothing else; every note on its hand's staff | F major, 4/4, quarter = 100, the tempo the recording itself displays; every note read is in it and nothing else | E major, 4/4, quarter = 105, 113 bars; every note read is in it, and 99.6% of its notes are notes read |
+| Score | E major, 4/4 with two bars of 2/4, quarter = 106, then 118, 120, 124 and 65; every note read is in it and nothing else; every note on its hand's staff | F major, 4/4, quarter = 100, the tempo the recording itself displays; every note read is in it and nothing else; 41 notes of chords too wide for one hand on the other staff | E major, 4/4, quarter = 105, 113 bars; every note read is in it, and 99.6% of its notes are notes read |
 | The same notes through the score model instead | 936 notes written for 929, three on the wrong staff, the opening triplets written as sixteenths | not run | not run |
 
 What this does and does not establish. For the first video every check agrees, and one more that
-only it allows: each bar carries exactly one printed note name. For the second, the keys agree
-but a tenth of the strong attacks in its audio have no note beside them; whether those are notes
-the reader missed or something in that recording's sound was not resolved. The first video read
-again at 720p gives 929 notes of which 5 are split and 5 merged against the 1080p reading (see
-the limits pinned in `tests/unit/test_visual_reader.py`).
+only it allows: each bar carries exactly one printed note name. The first video read again at
+720p gives 929 notes of which 5 are split and 5 merged against the 1080p reading (see the limits
+pinned in `tests/unit/test_visual_reader.py`).
 
-The third video is the full arrangement of the first one's song, made differently: a real
-keyboard filmed from above with the player's hands on it, keys that do not light, and a film
-playing behind the falling notes. The reader at first refused it (`keyboard_not_found`); with
-only the keyboard found, it read 8749 notes, mostly the film. Its checks, made without the
-keys:
+The second video's "strong attacks with no note" in the table above were mostly no attacks. They
+were counted as peaks of the audio's rise above its mean plus two standard deviations, and a
+ringing chord's rise ripples at about that level for some tenths of a second. Counted as jumps in
+the rise instead (`app.visual.audio.attack_times`), the second video has 363 attacks while notes
+are played, 357 with a note onset within 60 ms and every one within 150 ms; the first has 689,
+every one with an onset within 60 ms.
 
-- *Harmony with the audio* (`python -m eval.field_check`): 0.859, against 0.547 for the same
-  notes 8 s late and 0.25 transposed. For scale, a correct solo transcription gives 0.84 to
-  0.89. The 8749-note reading gave 0.574, below its own best transposition (0.631).
-- *Attacks*: local maxima of the reader's onset strength (`app.visual.audio.onset_strength`)
-  above its mean plus two standard deviations, at least 80 ms apart. 21 of 656 have no note
-  onset within 60 ms; the 8749-note reading left 104.
-- *The picture*: every note read drawn back over frames at 60, 96, 150, 211.2, 230 and 240
-  seconds. Each bar on screen has its note, named as the bar's printed name and
-  cut where the printed names say two notes touch. What is not right: in the last seconds the
-  closing credits, which appear over the notes, add about ten short notes, and the glow and
-  flares of the final chord a few more; a held note's glow adds one short note beside it at
-  230 s; and the hands, salmon and red against pale pink and lavender, differ in lightness
-  rather than hue, so they are split at middle C.
-- Notes outside E major: 20 of 2251, half of them in the last seconds.
+What was wrong in the second reading was found in the frames instead. Four notes were read as two
+each, one piece a sliver of 20 to 50 ms: joined back. And in runs of repeated notes whose bars
+touch, some seams left a notch at one corner only, or one blurred to half the strip, and two notes
+were read as one: twelve such notes are now separated (`faint_notches`), each a second block with
+its own printed name in the frames. The second video now reads 1415 notes (right hand 549, left
+866), 1412 with their key seen lit; the first is unchanged at 929. Not every such seam need be
+found: one that leaves no notch at all at 720p would still be read as one long note, and nothing
+measured here would show it.
+
+How the scores are written was measured on the same two videos. Each note's onset was compared
+with the grid it is written on:
+
+| | Rendered tutorial, 1080p60 | Synthesia screen recording, 720p30 |
+|---|---|---|
+| Steady stretches found | 5: 106, 118, 120, 124 and 65 to the minute (the tracker's bars gave 105 and one change, to 120, at the wrong bar) | 8, all within one beat a minute of 100; one tempo mark |
+| Onsets from the nearest twelfth of the fitted beat | median 1.6 ms; 2 of 850 over 10 ms | median 5 ms; 95% within 19 ms |
+| Beats taken from the notes / left to the tracker | 449 / 35 (before the first note, after the last) | 371 / 34 |
+| Bars | 114: 4/4 with two bars of 2/4; the slowing bar before the last section keeps its four beats on the notes and is marked *rit.* | 97, all 4/4 |
+| Tempo marks | 106 at bar 1, 118 at 34, 120 at 54, 124 at 70, 65 at 111 | 100 |
+| Triplets written | in the introduction only, where the notes sit on thirds of the beat to 2 ms | none (the earlier score had them wherever a note was read a frame late) |
+| Notes moved to the other staff | 0 | 41: the upper part of chords two octaves wide drawn in the left-hand colour |
+| Every note read is in the score, and nothing else | yes | yes |
+
+These are measurements of consistency, not of correctness against a reference: neither video has
+a published score here to compare with. What they do show is that the beat the notes are written
+on is the one the notes keep, and that the same figure is written the same way each time.
 
 Reading the third video at first changed how every video is read, and the first two then read
 worse: the strip higher above the keyboard and a looser test for the keyboard's rows cost the

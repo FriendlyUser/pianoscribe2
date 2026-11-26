@@ -139,7 +139,16 @@ next section.
    fingers, on neighbouring keys and struck and released together, are one thing laid across
    the keyboard and are dropped: the second development video scrolls its title banner down
    over every key before the notes begin, which read higher up is 30 notes at once. A glissando,
-   whose keys are struck one after the other, is kept.
+   whose keys are struck one after the other, is kept. A piece of a bar shorter than a twentieth
+   of a second, touching another on its key, is joined back to it: no key is struck twice that
+   fast, and such slivers are false seams (four in the second development video). And a seam too
+   faint to cut on outright (in a 720p picture two touching bars can leave a notch at one corner
+   only, or one blurred to half the strip) is cut when something else agrees: the notch is half
+   the depth of a plain one, or another key's bar has one at the same moment (a chord struck
+   again), or it makes its bar one more of a run of repeated notes, or the audio has an attack
+   there that no other note accounts for. Only white keys are looked at, and only corners that
+   no neighbouring key's bar covers. Twelve notes of the second development video are separated
+   this way (each a visible second block in the frames), none in the first.
 4. **Hands** (`hands.py`) from the colour of the bars, compared on hue so that the darker shade
    used for black keys stays with its hand. A video in one colour is split at middle C.
 5. **Checks** (`reader.py`, `audio.py`), reported with every result:
@@ -150,7 +159,9 @@ next section.
    - *the audio*: the notes are laid over the spectrum of the recording at each candidate octave.
      A keyboard that is not a full 88 keys looks the same an octave up; the true octave is where
      the notes' fundamentals and overtones meet the sound. Onsets are then timed against the
-     attacks heard, so that the notes sit on the beats the beat tracker hears;
+     attacks heard, so that the notes sit on the beats the beat tracker hears. An attack is a
+     jump in how fast the sound rises, not a level of it: a ringing chord ripples at the level
+     of a soft attack for some tenths of a second;
    - *the score*: the notes of the engraved score against the notes read (`check.py`).
 
 **Writing the notes down** (`model_scripts/exact_score.py`). The score model is not used here. It
@@ -161,17 +172,19 @@ are placed by rule:
 
 | Step | Rule |
 |---|---|
-| Beats | A tracked beat is some milliseconds off; the notes are not. Each beat with a note on it moves onto that note (`snap_beats`). After this, all but 5 of 929 notes lie within 0.045 beat of a grid point. |
-| Positions | Within a beat, the notes of a hand lie on the simplest grid that fits: halves, quarters, thirds or sixths of the beat (`quantize_onsets`). |
-| Voices | Notes of one hand struck and held together are a chord; a note held while others move is a second voice (`plan_voices`). |
-| Note values | A bar in the video is shorter than the note it stands for, since keys are released before the next note. A note lasts to the next note of its voice unless a real rest follows (`settle_lengths`). |
-| Ties | A note is cut at bar lines, and inside a bar wherever it would hide a beat stronger than the one it starts on (`split_value`). |
+| Beats | A tutorial video is drawn from a score played by a machine: for as long as the tempo holds, its notes keep a beat steady to a few milliseconds. The tracked beats only say roughly where that beat is. In windows of a few bars the tempo and phase are searched for that put the onsets on quarters of the beat most exactly; windows that agree grow into a stretch, fitted to all its onsets by least squares; where one stretch's beat line falls on the next one's, the tempo changes there (`steady_beats.py`). The first development video has five: 106, 118, 120, 124 and 65 to the minute, its onsets 2 ms (RMS) from the fitted grid. Where the notes keep no steady beat (a ritardando), the beats are counted so that the bars on both sides stay in step and put on the notes; in free playing the tracked beats stay, each moved onto the note struck on it (`snap_beats`). |
+| Bars | Within a stretch the beats are counted, so the bar lines are too: in the tracker's meter, at the phase most of its bar lines agree on. A tracker that loses a beat no longer shortens a bar; a real change of phase (the first video has two bars of 2/4) is kept where three or more of its bar lines agree on it. |
+| Tempo marks | From the bars' own lengths: each lasting tempo is marked where it begins, as it is (106, not a metronome's 105); a bar or two slower than what went before is marked *rit.* (`notate_exact.py`). |
+| Positions | Notes struck together are one moment and are written together. Within a beat, the notes of a hand lie on the simplest grid that fits: halves, quarters, thirds or sixths of the beat (`quantize_onsets`). In a video read coarsely (a screen recording at 30 frames a second: a note a frame late is nearer a third of the beat than its quarter), each beat line follows the notes around it, a triplet needs two notes on thirds, and a note between two quarters goes to the stronger. |
+| Voices | Notes of one hand struck and held together are a chord; a note held while others move is a second voice, for as long as something is held: once every voice has ended the next chord starts in one voice again, so a single line stays one voice (`plan_voices`). |
+| Staves | A video colours notes by track, and a track is not always a hand: the second development video draws accompaniment chords two octaves wide in its left-hand colour. Notes struck together on one staff and further apart than a hand reaches (a tenth) are divided at the gap nearest middle C, and the far part goes to the other staff (`share_wide_chords`). |
+| Note values | Read finely, a bar's length is the note value, but for the sliver cut off a note that is struck again: a note runs to the next of its voice across that sliver and otherwise ends on the plainest place near its measured end, the rest after it written out. Read coarsely, lengths are a player's: a note runs on across a gap of a sixteenth or less, and otherwise gets the plainest value it could be a shortened form of (`settle_lengths`). |
+| Ties | A note is cut at bar lines, and inside a bar wherever it would hide a beat stronger than the one it starts on, but for the syncopations written whole by custom: sixteenth, eighth, sixteenth; sixteenth, dotted eighth; eighth, quarter, eighth (`split_value`). |
 
-Rests, beams, tuplet brackets, accidentals, clefs and the tempo marking are then the model
-repository's own engraving rules (`notate_exact.py`). What still comes from the audio models is
-only what the picture cannot show: where the beats are and how they group into bars
-(SheetSage2-Refined), and the key (its key tracker). `PS_VIDEO_SCORE_WRITER=model` sends the
-notes to the score model instead.
+Rests, beams, tuplet brackets, accidentals and clefs are then the model repository's own engraving
+rules (`notate_exact.py`). What still comes from the audio models is only what the picture cannot
+show: roughly where the beat is and which beats begin a bar (SheetSage2-Refined), and the key (its
+key tracker). `PS_VIDEO_SCORE_WRITER=model` sends the notes to the score model instead.
 
 Because no transcriber and no score model run, this path needs no GPU in practice: on four CPU
 cores, a 4.4-minute 1080p60 video takes about four minutes (two to read the frames, one each for
@@ -402,9 +415,17 @@ with its outcome; per-stage timings are stored on the job record and returned by
   - Real videos have no reference score. The checks made on every reading (keys, audio, score)
     show that the notes read are the notes shown; they cannot show it note by note for the
     lengths, and a renderer that does not light its keys leaves only the audio.
-  - Bar lines, meter, tempo and key are still heard, not read: the limits above for the beat
-    model and the key tracker apply (the first development video has one 3/4 bar among 4/4
-    that may not be the arranger's).
+  - Which beat begins a bar, the meter and the key are still heard, not read: the limits above
+    for the beat model and the key tracker apply. The tempo and where each beat falls are the
+    notes' own wherever they keep a steady beat. The first development video comes out with
+    two bars of 2/4 among 4/4, where the tracker's bar lines move by two beats and stay moved;
+    the left hand's bass notes change on the bar lines so drawn, but whether the short bar
+    falls before or after the phrase it borders is the tracker's word. Synthesia draws its
+    own bar lines across the roll; they are not read.
+  - A video recorded from the screen at 30 frames a second is read to about a hundredth of a
+    second for most notes and a frame (0.03 s) for some: enough to place every note on its
+    sixteenth, not to tell a triplet from a late sixteenth by one note, and its note lengths
+    are written as a player's, to the plainest value, not as drawn.
   - The video must be of the usual kind: a keyboard along the bottom, bars falling onto it. The
     keyboard may be filmed, with the hands on it, if the bars are drawn above it; a camera on a
     piano with no bars drawn, a keyboard that moves or zooms, and notes that rise are not read.

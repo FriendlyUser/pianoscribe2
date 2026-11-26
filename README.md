@@ -48,6 +48,10 @@ YouTube link scored 0.85:
 
 **Reading a piano tutorial video.** The notes are measured in the frames, not heard, and written
 down by rule, so the score is held to a stricter standard: the notes shown, all of them, no others.
+The beat they are written on is their own, too: a video drawn from a score keeps a beat steady to
+a few milliseconds, which is fitted to the notes (each tempo, and where it changes), so that the
+same figure is written the same way every time. The beat tracker is left to say roughly where the
+beat is and which beats begin a bar.
 
 | Ground truth | Result |
 |---|---|

@@ -106,15 +106,10 @@ def test_notes_that_touch_are_told_apart_by_their_corners(read) -> None:
     assert reading.facts["notes"]["separated_by_corners"] == 5
 
 
-@pytest.mark.xfail(
-    strict=False, reason="known limit: a seam between touching bars can fall between two rows of the roll"
-)
 def test_every_seam_between_touching_notes_is_found(read) -> None:
-    # Pins a known limit, which depends on where the seams fall against the pixel rows: in this
-    # rendered fixture one of the five seams between six touching bars on a white key has been
-    # seen to go unread, merging two repeated notes into one. In the 1080p tutorial video the
-    # reader was developed on, all 148 touching notes are separated and each has its attack in
-    # the audio; the fixture's bars meet more tightly than that video's.
+    # Six touching bars on a white key and six on a black one. One of the five seams on the white
+    # key leaves a notch at one corner only (it falls between two rows of the roll): too faint to
+    # cut on outright, deep enough to count (``faint_notches``). It used to go unread.
     truth = [VideoNote(71, 0.5 * i, 0.5 * (i + 1), "right") for i in range(6)]
     truth += [VideoNote(49, 0.5 * i, 0.5 * (i + 1), "left") for i in range(6)]
     truth += [VideoNote(64, 0.0, 3.0, "right"), VideoNote(45, 0.0, 3.0, "left")]

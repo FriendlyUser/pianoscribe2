@@ -31,6 +31,8 @@ import math
 from dataclasses import dataclass, field
 from fractions import Fraction
 
+from steady_beats import PRECISE, Steady, steady_beats
+
 TICKS = 12  # per beat
 # Grids a hand's notes may lie on within one beat, simplest first (in ticks).
 GRIDS: tuple[tuple[int, ...], ...] = ((0, 6), (0, 3, 6, 9), (0, 4, 8), (0, 2, 4, 6, 8, 10))
@@ -51,18 +53,23 @@ NOTE_TYPES = {
 # ----------------------------------------------------------------------------------------------
 # beats
 # ----------------------------------------------------------------------------------------------
-def snap_beats(beats: list[float], onsets: list[float], reach: float = 0.17) -> list[float]:
+def snap_beats(
+    beats: list[float], onsets: list[float], reach: float = 0.17, exact: list[bool] | None = None
+) -> list[float]:
     """Move each beat onto the note struck on it, if there is one within ``reach`` of a beat.
 
-    Beats with no note on them keep their place between their neighbours.
+    Beats with no note on them keep their place between their neighbours. Beats marked
+    ``exact`` (fitted to the notes already, see ``steady_beats``) stay where they are.
     """
     if len(beats) < 2 or not onsets:
         return list(beats)
     notes = sorted(onsets)
     moved = list(beats)
-    fixed = [False] * len(beats)
+    fixed = list(exact) if exact is not None else [False] * len(beats)
     cursor = 0
     for i, beat in enumerate(beats):
+        if fixed[i]:
+            continue
         before = beat - beats[i - 1] if i > 0 else beats[1] - beats[0]
         after = beats[i + 1] - beat if i + 1 < len(beats) else beats[-1] - beats[-2]
         limit = reach * min(before, after)
@@ -109,23 +116,56 @@ def beat_position(time: float, beats: list[float]) -> float:
     return low + (time - beats[low]) / (beats[low + 1] - beats[low])
 
 
-def quantize_onsets(positions: list[float]) -> list[int]:
-    """Tick of each onset (positions in beats), on the simplest grid that fits its beat."""
+STRAIGHT = (0, 3, 6, 9)  # quarters of the beat, in ticks
+
+
+def quantize_onsets(positions: list[float], loose: dict[int, float] | None = None) -> list[int]:
+    """Tick of each onset (positions in beats), on the simplest grid that fits its beat.
+
+    ``loose`` gives, for beats read coarsely, how far (in beats) a note may lie from a half or a
+    quarter of the beat and still be on it: more than ``FIT``, since a note read a frame late is
+    nearer a third of the beat than the quarter it is on. Thirds and sixths must always fit closely.
+    """
     by_beat: dict[int, list[int]] = {}
     for index, position in enumerate(positions):
         by_beat.setdefault(math.floor(position + FIT), []).append(index)
     ticks = [0] * len(positions)
     for beat, members in by_beat.items():
         inside = [positions[i] - beat for i in members]
-        chosen: tuple[int, ...] = WRITABLE_TICKS
-        for grid in GRIDS:
-            points = (*grid, TICKS)
-            if all(min(abs(value * TICKS - p) for p in points) <= FIT * TICKS for value in inside):
-                chosen = grid
-                break
-        points = (*chosen, TICKS)
+        reach = max(FIT, (loose or {}).get(beat, FIT))
+
+        def fits(grid: tuple[int, ...], inside: list[float] = inside, reach: float = reach) -> bool:
+            allowed = (reach if all(p % 3 == 0 for p in grid) else FIT) * TICKS
+            return all(min(abs(value * TICKS - p) for p in (*grid, TICKS)) <= allowed for value in inside)
+
+        coarse = loose is not None and beat in loose
+        chosen = next((grid for grid in GRIDS if fits(grid)), None)
+        if coarse and chosen is not None and len(chosen) > 2:
+            # Sixteenths that fit only loosely are placed one by one, below (the stronger place wins a near tie).
+            tight = all(min(abs(value * TICKS - p) for p in (*chosen, TICKS)) <= FIT * TICKS for value in inside)
+            chosen = chosen if tight else None
+        if coarse and chosen is not None and any(p % 3 for p in chosen):
+            # Read coarsely, one note late by a frame sits on a third of the beat. A triplet is at
+            # least two notes on thirds or sixths of the beat that are not also quarters of it.
+            thirds = {min(chosen, key=lambda p, value=value: abs(value * TICKS - p)) for value in inside}
+            if len({p for p in thirds if p % 3}) < 2:
+                chosen = None
         for i, value in zip(members, inside, strict=True):
-            ticks[i] = beat * TICKS + min(points, key=lambda p: abs(value * TICKS - p))
+            if chosen is None:
+                # No one grid holds every note of the beat. Each goes to the nearest quarter of the
+                # beat, unless (read finely) it sits squarely on a third or a sixth and on no quarter.
+                near = min(WRITABLE_TICKS, key=lambda p, value=value: abs(value * TICKS - p))
+                straight = min((*STRAIGHT, TICKS), key=lambda p, value=value: abs(value * TICKS - p))
+                exact = not coarse and abs(value * TICKS - near) <= FIT * TICKS < abs(value * TICKS - straight)
+                if coarse:
+                    # Read coarsely, a note halfway between two quarters of the beat is on the stronger.
+                    close = [
+                        p for p in (*STRAIGHT, TICKS) if abs(value * TICKS - p) <= abs(value * TICKS - straight) + 0.5
+                    ]
+                    straight = min(close, key=lambda p: (p % TICKS != 0, p % 6 != 0))
+                ticks[i] = beat * TICKS + (near if exact else straight)
+            else:
+                ticks[i] = beat * TICKS + min((*chosen, TICKS), key=lambda p, value=value: abs(value * TICKS - p))
     return ticks
 
 
@@ -207,6 +247,7 @@ class Chord:
     pitches: list[int]
     voice: int = 1
     held: int = 0  # ticks the keys were really down
+    cap: int | None = None  # tick by which it must end: where the next passage of its hand begins
 
     def __post_init__(self) -> None:
         self.held = self.end - self.start
@@ -231,25 +272,39 @@ def group_chords(notes: list[tuple[int, int, int]]) -> list[Chord]:
     return chords
 
 
-def plan_voices(chords: list[Chord]) -> list[list[Chord]]:
+def plan_voices(chords: list[Chord], played: bool = False) -> list[list[Chord]]:
     """Share the chords of one hand among at most ``MAX_VOICES`` voices, each a line with no overlaps.
 
-    A chord continues the voice that ended most recently. A chord that begins while every
-    voice still sounds takes the key-release of the nearest one as a slur into it: that
-    chord is cut short where the new one starts.
+    A chord continues the voice that ended nearest its start, a moment before it or (the
+    key-release of a slur) a moment after: that chord is then cut short where the new one
+    starts. A second voice is opened only for a chord that begins while another is really
+    held, and only for as long as something is: once every voice has ended, the passage is
+    over and the next chord starts again in one voice. So a single line stays one voice.
+
+    ``played``: the lengths are a player's (see ``settle_lengths``), who holds a note into the
+    next far longer than a score drawn by machine does.
     """
+
+    def slur(chord: Chord) -> int:
+        length = chord.end - chord.start
+        return min(8, max(4, round(0.3 * length))) if played else max(2, round(0.12 * length))
+
+    passages: list[list[list[Chord]]] = []
     voices: list[list[Chord]] = []
     for chord in sorted(chords, key=lambda c: (c.start, -(c.end - c.start), c.pitches[0])):
-        free = [v for v in voices if v[-1].end <= chord.start]
-        slurred = [
-            v
-            for v in voices
-            if 0 < v[-1].end - chord.start <= max(2, 0.12 * (v[-1].end - v[-1].start)) and v[-1].start < chord.start
-        ]
-        if free:
-            voice = max(free, key=lambda v: v[-1].end)
-        elif slurred:
-            voice = min(slurred, key=lambda v: v[-1].end)
+        if voices and all(v[-1].end - chord.start <= slur(v[-1]) and v[-1].start < chord.start for v in voices):
+            for voice in voices:
+                voice[-1].end = min(voice[-1].end, chord.start)
+                for member in voice:
+                    member.cap = chord.start
+            passages.append(voices)
+            voices = []
+        if not voices:
+            voices.append([chord])
+            continue
+        near = [v for v in voices if v[-1].end - chord.start <= slur(v[-1]) and v[-1].start < chord.start]
+        if near:
+            voice = min(near, key=lambda v: (abs(v[-1].end - chord.start), v[-1].end > chord.start))
         elif len(voices) < MAX_VOICES:
             voices.append([])
             voice = voices[-1]
@@ -264,11 +319,15 @@ def plan_voices(chords: list[Chord]) -> list[list[Chord]]:
         if voice and voice[-1].end > chord.start:
             voice[-1].end = chord.start
         voice.append(chord)
-    voices.sort(key=lambda v: -sum(sum(c.pitches) / len(c.pitches) for c in v) / len(v))
-    for number, voice in enumerate(voices, start=1):
-        for chord in voice:
-            chord.voice = number
-    return voices
+    passages.append(voices)
+    lines: list[list[Chord]] = [[] for _ in range(MAX_VOICES)]
+    for passage in passages:
+        passage.sort(key=lambda v: -sum(sum(c.pitches) / len(c.pitches) for c in v) / len(v))
+        for number, voice in enumerate(passage, start=1):
+            for chord in voice:
+                chord.voice = number
+            lines[number - 1] += voice
+    return [line for line in lines if line]
 
 
 def _may_end(tick: int, triple_beats: set[int]) -> bool:
@@ -278,44 +337,117 @@ def _may_end(tick: int, triple_beats: set[int]) -> bool:
     return tick % 2 == 0 if tick // TICKS in triple_beats else tick % 3 == 0
 
 
-def settle_lengths(voice: list[Chord], triple_beats: set[int]) -> None:
+def settle_lengths(voice: list[Chord], triple_beats: set[int], fine: set[int] | None = None) -> None:
     """Give each chord of a voice its written length.
 
-    A key is released a little before the next note, so a bar in the video is shorter than
-    the note value it stands for. A chord therefore lasts until the next chord of its
-    voice when the gap between them is short; otherwise it gets the simplest note value
-    it could be a shortened form of, and a rest follows.
+    ``fine``: the beats read finely (a video drawn from a score, read to a few milliseconds).
+    There a bar's length is the note value itself, but for the sliver cut off a note that is
+    struck again (or off every note, a tenth of it or so): a chord runs to the next of its
+    voice when the gap is that sliver, and otherwise ends where its bar ends, on the grid,
+    with the rest that follows written out.
+
+    Elsewhere (a recording of a performance, read coarsely) lengths are a player's: a key is
+    released some way before the next note. A chord runs to the next of its voice when the gap
+    is no more than a sixteenth or it fills most of the space; otherwise it gets the plainest
+    note value it could be a shortened form of, and a rest follows.
     """
     for chord, following in zip(voice, [*voice[1:], None], strict=True):
-        limit = following.start if following is not None else None
+        limits = [t for t in (following.start if following is not None else None, chord.cap) if t is not None]
+        limit = min(limits) if limits else None
         held = max(1, chord.end - chord.start)
-        if limit is not None and (limit - chord.end <= 3 or held >= 0.6 * (limit - chord.start)):
-            chord.end = limit
+        exact = fine is not None and chord.start // TICKS in fine
+        if limit is not None:
+            gap = limit - chord.end
+            space = limit - chord.start
+            if (gap <= 2 or held >= 0.88 * space) if exact else (gap <= 4 or held >= 0.55 * space):
+                chord.end = limit
+                continue
+        whole = round(held / TICKS) * TICKS
+        if not limits and whole >= TICKS and abs(held - whole) <= 3:
+            # The last note of its hand, let ring a little past the beat or released a little before it.
+            chord.end = chord.start + whole
             continue
         best, best_cost = None, 0.0
-        for length in range(max(1, held - 1), 2 * held + 13):
+        span = range(max(1, held - 2), math.ceil(held / 0.88) + 3) if exact else range(max(1, held - 2), 2 * held + 13)
+        for length in span:
             end = chord.start + length
             if limit is not None and end > limit:
                 break
-            if not _may_end(end, triple_beats) or not 0.6 <= held / length <= 1.1:
+            if not _may_end(end, triple_beats):
                 continue
-            plain = (
-                0.0
-                if length % TICKS == 0
-                else 0.02
-                if length % 6 == 0
-                else 0.06
-                if length % 3 == 0 or length % 4 == 0
-                else 0.15
-            )
-            cost = abs(held / length - 0.95) + plain
-            if best is None or cost < best_cost:
-                best, best_cost = end, cost
+            if exact:
+                # As long as its bar, or the value its bar is the gated form of (nine tenths of it or so).
+                # Where a bar ends is read less surely than where it begins (a tick or so): of the
+                # places near its end, the note ends on the plainest, a beat before a half of one,
+                # a half before a quarter, any of them before a third.
+                as_drawn = 0.88 * length <= held <= length
+                place = 0.0 if end % TICKS == 0 else 0.15 if end % 6 == 0 else 0.3 if end % 3 == 0 else 0.45
+                cost = (0.0 if as_drawn else 0.25 * abs(length - held)) + place
+            else:
+                if not 0.5 <= held / length <= 1.4:
+                    continue
+                plain = (
+                    0.0
+                    if length % TICKS == 0
+                    else 0.05
+                    if length % 6 == 0
+                    else 0.35
+                    if length % 3 == 0 or length % 4 == 0
+                    else 0.5
+                )
+                # A value that would have to be tied over a beat it does not start on is not plain.
+                tied = chord.start % 6 != 0 and (end - 1) // TICKS != chord.start // TICKS
+                cost = abs(held / length - 0.9) + plain + (0.55 if tied else 0.0)
+            if best is None or cost < best_cost - 1e-9 or (not exact and abs(cost - best_cost) <= 1e-9):
+                best, best_cost = end, cost  # of equals, the longer: fewer rests
         if best is None:
             best = chord.end
             while not _may_end(best, triple_beats) and (limit is None or best < limit):
                 best += 1
         chord.end = max(best, chord.start + 1)
+
+
+HAND_SPAN = 16  # semitones one hand can strike together at the very most (a major tenth)
+
+
+def share_wide_chords(ticked: dict[int, list[tuple[int, int, int]]]) -> int:
+    """Move to the other staff the part of a chord no one hand can strike; the number of notes moved.
+
+    A video colours notes by track, and a track is not always a hand: an accompaniment may be
+    drawn as one "hand" two octaves wide. Notes (start, end, pitch) struck together on one
+    staff and further apart than a hand reaches are divided where the staves meet (at the gap
+    nearest middle C that leaves each part within a hand's reach), and the part on the far
+    side goes to the other staff, if what is struck there at that moment still fits one hand
+    with it.
+    """
+    moved = 0
+    struck: dict[int, dict[int, list[tuple[int, int, int]]]] = {1: {}, 2: {}}
+    for staff in (1, 2):
+        for item in ticked.get(staff, []):
+            struck[staff].setdefault(item[0], []).append(item)
+    for staff, other in ((2, 1), (1, 2)):
+        for start, items in sorted(struck[staff].items()):
+            pitches = sorted(item[2] for item in items)
+            if pitches[-1] - pitches[0] <= HAND_SPAN:
+                continue
+            cuts = [
+                (b - a, b)
+                for a, b in zip(pitches, pitches[1:], strict=False)
+                if a - pitches[0] <= HAND_SPAN and pitches[-1] - b <= HAND_SPAN and b > a
+            ]
+            if not cuts:
+                continue
+            cut = min(cuts, key=lambda item: (abs(item[1] - 59.5), -item[0]))[1]  # the gap nearest middle C
+            goes = [item for item in items if (item[2] >= cut) == (staff == 2)]
+            there = [item[2] for item in struck[other].get(start, [])] + [item[2] for item in goes]
+            if max(there) - min(there) > HAND_SPAN:
+                continue
+            struck[staff][start] = [item for item in items if item not in goes]
+            struck[other].setdefault(start, []).extend(goes)
+            moved += len(goes)
+    for staff in (1, 2):
+        ticked[staff] = [item for start in sorted(struck[staff]) for item in struck[staff][start]]
+    return moved
 
 
 # ----------------------------------------------------------------------------------------------
@@ -364,6 +496,14 @@ def _split_plain(start: int, end: int, bar: Bar) -> list[Value]:
     strongest = max((s for s, _ in inside), default=-1)
     plain = _plain(length, bar.unit)
     if plain is not None and _strength(start - bar.start, bar) >= strongest:
+        return [Value(start, length, plain[0], plain[1])]
+    # Syncopations written whole by custom, though they hide a stronger place than they start on:
+    # inside one beat, the note between two sixteenths (16th, 8th, 16th) and the one after a
+    # sixteenth (16th, dotted 8th); across one beat that is not the middle of the bar, the note
+    # between two eighths (8th, quarter, 8th).
+    offset = (start - bar.start) % TICKS
+    whole = (offset == 3 and length in (6, 9)) or (offset == 6 and length == TICKS and strongest <= 3)
+    if plain is not None and bar.unit == 4 and whole:
         return [Value(start, length, plain[0], plain[1])]
     if not inside:
         return [Value(start, length, "16th" if bar.unit == 4 else "32nd")]
@@ -446,41 +586,73 @@ class Plan:
     moved_beats: int = 0
     off_grid: int = 0  # notes further than FIT from every grid point
     cut_short: int = 0  # chords cut where another began, for want of a third voice
+    steady: Steady | None = None  # the beat the notes keep, where they keep one
+    shared: int = 0  # notes written on the other hand's staff, their chord being too wide for one hand
     voices: dict[int, int] = field(default_factory=dict)  # staff -> voices used
 
 
 def plan_score(notes: list[dict], annotation: dict) -> Plan:
     """Lay ``notes`` (``start``, ``end`` in seconds, ``pitch``, ``hand``) out on the tracker's beats and bars."""
-    tracked = [float(b) for b in annotation["beats"]]
-    beats = snap_beats(tracked, [float(n["start"]) for n in notes])
-    moved = sum(abs(a - b) > 1e-6 for a, b in zip(tracked, beats, strict=True))
-    staves = {1: [n for n in notes if n["hand"] != "left"], 2: [n for n in notes if n["hand"] == "left"]}
+    onsets = [float(n["start"]) for n in notes]
+    steady = steady_beats(annotation, onsets)
+    annotation = {**annotation, "beats": steady.beats, "bars": steady.bars}
+    beats = snap_beats(steady.beats, onsets, exact=steady.fitted)
+    moved = sum(abs(a - b) > 1e-6 for a, b in zip(steady.beats, beats, strict=True))
+    # Notes struck together are written together: each takes the time of its moment.
+    struck = list(onsets)
+    group: list[int] = []
+    for index in [*sorted(range(len(notes)), key=lambda i: onsets[i]), -1]:
+        if index >= 0 and group and onsets[index] - onsets[group[0]] <= steady.within:
+            group.append(index)
+            continue
+        for member in group:
+            struck[member] = sum(onsets[i] for i in group) / len(group)
+        group = [index]
+    # Read finely or coarsely is a matter of the whole video (its frame rate, its picture), not of
+    # one stretch whose few notes happen to sit well.
+    fitted = sorted(scatter for scatter in steady.scatter if scatter < float("inf"))
+    finely = bool(fitted) and fitted[len(fitted) // 2] <= PRECISE
+    fine = {beat for beat, scatter in enumerate(steady.scatter) if finely and scatter <= PRECISE}
+    loose = {
+        beat: min(0.075, 2.5 * max(scatter, PRECISE) / (beats[beat + 1] - beats[beat]))
+        for beat, scatter in enumerate(steady.scatter[:-1])
+        if scatter < float("inf") and beat not in fine
+    }
+    hands = {
+        1: [i for i, n in enumerate(notes) if n["hand"] != "left"],
+        2: [i for i, n in enumerate(notes) if n["hand"] == "left"],
+    }
     ticked: dict[int, list[tuple[int, int, int]]] = {}
     off_grid = 0
-    triple: dict[int, set[int]] = {}
-    for staff, members in staves.items():
-        positions = [beat_position(float(n["start"]), beats) for n in members]
-        starts = quantize_onsets(positions)
-        off_grid += sum(abs(p * TICKS - t) > FIT * TICKS for p, t in zip(positions, starts, strict=True))
-        triple[staff] = {t // TICKS for t in starts if t % 3 != 0}
+    for staff, members in hands.items():
+        positions = [beat_position(struck[i], beats) for i in members]
+        starts = quantize_onsets(positions, loose)
+        off_grid += sum(
+            abs(p * TICKS - t) > max(FIT, loose.get(t // TICKS, FIT)) * TICKS
+            for p, t in zip(positions, starts, strict=True)
+        )
         ends = [
-            max(s + 1, round(beat_position(float(n["end"]), beats) * TICKS))
-            for n, s in zip(members, starts, strict=True)
+            max(s + 1, round(beat_position(float(notes[i]["end"]), beats) * TICKS))
+            for i, s in zip(members, starts, strict=True)
         ]
-        ticked[staff] = [(s, e, int(n["pitch"])) for s, e, n in zip(starts, ends, members, strict=True)]
+        ticked[staff] = [(s, e, int(notes[i]["pitch"])) for s, e, i in zip(starts, ends, members, strict=True)]
+    shared = share_wide_chords(ticked)
+    triple = {staff: {s // TICKS for s, _, _ in members if s % 3 != 0} for staff, members in ticked.items()}
     every = [item for members in ticked.values() for item in members]
     if not every:
         raise ValueError("no notes to write")
     plan = Plan(bars=[], written=[], beats=beats, notes=len(every), moved_beats=moved, off_grid=off_grid)
+    plan.steady = steady
+    plan.shared = shared
     chords_by_staff: dict[int, list[list[Chord]]] = {}
-    last = max(e for _, e, _ in every)
+    last = min(s for s, _, _ in every) + 1  # the last tick written, once the lengths are settled
     for staff, members in ticked.items():
         chords = group_chords(members)
         held = {id(c): c.end for c in chords}
-        voices = plan_voices(chords)
+        voices = plan_voices(chords, played=not finely)
         plan.cut_short += sum(c.end < held[id(c)] - 2 for c in chords)
         for voice in voices:
-            settle_lengths(voice, triple[staff])
+            settle_lengths(voice, triple[staff], fine)
         chords_by_staff[staff] = voices
         plan.voices[staff] = len(voices)
         last = max([last, *[c.end for v in voices for c in v]])
