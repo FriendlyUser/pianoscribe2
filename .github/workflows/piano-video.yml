@@ -38,6 +38,7 @@ on:
       - backend/app/ingest/youtube.py
       - backend/model_scripts/exact_score.py
       - backend/model_scripts/notate_exact.py
+      - backend/model_scripts/steady_beats.py
       - backend/requirements/cover-env-cpu.txt
   push:
     branches: ["claude/**"]
@@ -48,6 +49,7 @@ on:
       - backend/app/ingest/youtube.py
       - backend/model_scripts/exact_score.py
       - backend/model_scripts/notate_exact.py
+      - backend/model_scripts/steady_beats.py
       - backend/requirements/cover-env-cpu.txt
 
 permissions:
@@ -189,6 +191,7 @@ jobs:
           rows = {
               "Notes read": f"{video.get('notes')} ({video.get('right_hand')} right hand, {video.get('left_hand')} left)",
               "Confirmed by the keys lighting up": video.get("confirmed_by_keys"),
+              "Attacks in the audio with a note read / attacks": f"{video.get('attacks_with_a_note')} / {video.get('attacks_heard')}",
               "Keyboard shown": f"{video.get('lowest_key')} to {video.get('highest_key')}",
               "Octave from": video.get("octave_from"),
               "Hands from": video.get("hands_from"),

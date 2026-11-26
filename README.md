@@ -57,6 +57,7 @@ beat is and which beats begin a bar.
 |---|---|
 | Rendered video of a piece with every note known (720p, H.264), reader alone | 62 of 62 notes, each with the right key and hand; onsets within 7 ms, ends within 11 ms |
 | The same video through the whole pipeline, against the piece | overall 1.00: every note in its bar, at its beat, with its length, on the staff of its hand; key, meter and tempo exact |
+| The same piece rendered as a real piano filmed from above at 480p (all 88 keys, 16 pixels to a white key, dim and unevenly spaced as a camera sees them, every note a white block in a glow of one colour, sparks where notes land, the player's hands over the keys), reader alone | 62 of 62 notes, each with the right key and the right hand (told by where the hands are); onsets within 6 ms, ends within 14 ms |
 
 Real videos have no reference score, so each reading is cross-checked three ways instead (the
 keys lighting up, the attacks in the audio, the pitch of the audio); the three videos the reader
@@ -65,7 +66,11 @@ was developed on, and what those checks can and cannot show, are in
 read to 929 notes with every check passing; lower resolutions and screen recordings read with a
 few notes in a hundred in doubt; a filmed keyboard whose keys do not light, with a film playing
 behind the notes, read to 2251 notes that agree with its audio as a correct transcription does,
-with a few false notes where text and glow come over the notes at the end. See also
+with a few false notes where text and glow come over the notes at the end; and two 480p videos
+of a real piano filmed from above, whose notes glow in one colour for both hands, read to 1302
+and 1975 notes from one picture of each video's whole roll, with every lit part of that picture
+accounted for by a key, all but 1 and 2 of the 276 and 501 strong attacks in the audio matched by
+a note, and each hand told by where the player's hands are. See also
 [Known limitations](ARCHITECTURE.md#known-limitations).
 
 A field test on four more recordings from anime and visual novels (two songs, two piano solos)

@@ -69,12 +69,19 @@ export function ScoreViewer({ job, cached, shellPdf = false }: Props) {
                 title={
                   `Keyboard shown: ${result.video.lowest_key} to ${result.video.highest_key}. ` +
                   `Right hand ${result.video.right_hand} notes, left hand ${result.video.left_hand}` +
-                  (result.video.hands_from === "pitch" ? " (the video uses one colour: split at middle C)." : ".")
+                  (result.video.hands_from === "pitch"
+                    ? " (the video uses one colour: split at middle C)."
+                    : result.video.hands_from === "hands"
+                      ? " (the video uses one colour: told by where the player's hands are)."
+                      : ".")
                 }
               >
                 {result.video.notes} notes read
                 {result.video.confirmed_by_keys !== null &&
                   `, ${result.video.confirmed_by_keys} confirmed by the keys lighting up`}
+                {result.video.attacks_heard != null &&
+                  result.video.attacks_with_a_note != null &&
+                  `, ${result.video.attacks_with_a_note} of ${result.video.attacks_heard} attacks in the audio matched`}
               </li>
             )}
             {result.video && result.video.score_kept !== null && result.video.score_backed !== null && (

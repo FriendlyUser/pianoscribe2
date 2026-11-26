@@ -164,6 +164,78 @@ next section.
      of a soft attack for some tenths of a second;
    - *the score*: the notes of the engraved score against the notes read (`check.py`).
 
+### Reading a small picture, or a filmed keyboard
+
+The reader above gives every key a few columns of its own in a thin strip of each frame, and
+takes whatever differs from the empty background there for a bar. A 480-line video of a real
+piano filmed from above has neither: a white key is 16 columns wide, the notes are white blocks
+in a glow of colour, sparks fly where they land, the keys are dim and tinted by a strip of
+lights, and the player's hands are over them. Such videos (any filmed keyboard, and any
+keyboard with white keys under 20 columns) are read another way (`stacked.py`):
+
+1. **Keyboard.** Fixed grey levels find no keyboard in uneven light. Across the black keys every
+   stretch of a row holds a dark tone and a light one, however bright that stretch is; a pixel
+   is light or dark by the middle of the two tones around it (`filmed_rows`). The keys are
+   measured across the upper part of the black keys, next to where the notes land and where
+   hands seldom are. A camera does not film keys evenly (in both development videos a white key
+   is 4% wider at the ends of the keyboard than in the middle), so no one key width holds: the
+   black keys are counted from one to the next (a little over one white key apart within a
+   group, a little under two across E|F or B|C), their pattern names them, and a smooth curve
+   through them, each a little to one side of its boundary by its kind, gives every boundary
+   (`measure_filmed_keyboard`).
+2. **Light.** What a block's body looks like is taken from the brightest things that move above
+   the keyboard: the channels in which every block is bright (`block_light`). White blocks in a
+   violet glow are bright in all three, and are read in the weakest of them, where the glow is
+   dark two columns from a block's edge; blocks that turn from cyan to pink as they fall are
+   bright only in blue. A pixel that is no brighter than the still picture behind the notes
+   counts for nothing.
+3. **One picture of the roll.** Every point of the roll is on screen for a second or two: in
+   fifty frames or more, at every height above the keyboard. A first pass follows two rows of
+   the picture to time the fall of the notes (`watch`); a second lays every frame onto one
+   picture, shifted by how far the roll had scrolled (`stack`). Four bands of the screen give a
+   picture each, and the middle value of the four is kept: a block is in all of them, a spark, a
+   caption or a watermark in one. The speed from two rows is good to a part in a thousand, which
+   over the height of the screen is a fraction of a row; each band is therefore measured against
+   the lowest and moved onto it first. The result is the roll as its maker drew it, one row to a
+   pixel of travel (8 to 10 ms), with edges sharp to a fraction of a column.
+4. **Lanes.** The maker of such a video lays an evenly spaced keyboard over the frame for the
+   notes to fall onto, and the camera's keyboard is not even: the lanes lie up to a third of a
+   key off the filmed keys at the ends. So the lanes are measured on the roll itself
+   (`find_lanes`): runs of one width at one place, thousands of them, are a lane; the lanes of
+   the white keys' blocks lie on an even lattice (to 0.2 of a column in the development videos),
+   the black keys' beside its boundaries, to one side by their kind. Blocks of neighbouring keys
+   that sound together join into wider runs, which lie on no lattice. The filmed keys only name
+   the lanes.
+5. **Rows.** A white key's block is the only one that can cover the stretch of its lane between
+   the blocks of its neighbours: lit there, the key is on. A black key's block lies over the
+   edges of two white keys' blocks; each half is read where the white key on that side does not
+   reach, and trusted only while that white key is off (`read_rows`). A black key between two
+   white keys that both sound is under their blocks and cannot be seen; for how long that was
+   so, in all, is reported (0.03 s and 0.02 s in the development videos). Every lit column is
+   then accounted for by a key that is on, and the columns that are not are counted: in the
+   development videos about 1% of them, never more than four rows running, the fringe at
+   blocks' rounded ends.
+6. **Blocks.** A run of rows is a block; where two blocks on one key meet end to end, only their
+   rounded corners show it: both corner strips of the lane dip and recover within a few rows
+   (`pinches`). A dip to 85% of its surroundings or less is a seam (twelve in the second
+   development video, each a visible pinch); a shallower one needs an attack in the audio that
+   no note accounts for.
+7. **Hands.** Both hands' notes are drawn alike, but the hands are in the picture. Skin is
+   redder than it is green; keys, shadows and the flashes where notes land are not. Counting
+   the skin in each column, over the front of the keys and just below them, gives every frame a
+   profile with one hump per hand. The column between the humps is followed through the video
+   as the path that crosses the least skin, keeps skin on both sides and moves no more than it
+   must, found over all frames at once (`divide_hands`): it passes between two hands that
+   touch for a moment and stays put while one hand is away. A note belongs to the hand on its
+   side of that column as its key goes down.
+8. **Checks.** A filmed key does not light, so the keys cannot confirm the notes. The picture
+   check of step 5 and the audio do: the offset between notes and attacks, how many attacks
+   have a note, and whether the notes go on sounding after their keys are released
+   (`audio.rings_on`): the score writer needs to know.
+
+A picture with white keys wider than 26 columns on a filmed keyboard is read at a smaller size:
+the picture of the roll has a row for every pixel the notes fall, and gains nothing from more.
+
 **Writing the notes down** (`model_scripts/exact_score.py`). The score model is not used here. It
 writes fluent notation, but it decides for itself what was played: given the exact notes of the
 first development video it wrote 936 notes for 929, put three on the wrong staff and wrote the
@@ -172,13 +244,13 @@ are placed by rule:
 
 | Step | Rule |
 |---|---|
-| Beats | A tutorial video is drawn from a score played by a machine: for as long as the tempo holds, its notes keep a beat steady to a few milliseconds. The tracked beats only say roughly where that beat is. In windows of a few bars the tempo and phase are searched for that put the onsets on quarters of the beat most exactly; windows that agree grow into a stretch, fitted to all its onsets by least squares; where one stretch's beat line falls on the next one's, the tempo changes there (`steady_beats.py`). The first development video has five: 106, 118, 120, 124 and 65 to the minute, its onsets 2 ms (RMS) from the fitted grid. Where the notes keep no steady beat (a ritardando), the beats are counted so that the bars on both sides stay in step and put on the notes; in free playing the tracked beats stay, each moved onto the note struck on it (`snap_beats`). |
+| Beats | A tutorial video is drawn from a score played by a machine: for as long as the tempo holds, its notes keep a beat steady to a few milliseconds. The tracked beats only say roughly where that beat is. In windows of a few bars the tempo and phase are searched for that put the onsets on quarters of the beat most exactly; windows that agree grow into a stretch, fitted to all its onsets by least squares; where one stretch's beat line falls on the next one's, the tempo changes there (`steady_beats.py`). The first development video has five: 106, 118, 120, 124 and 65 to the minute, its onsets 2 ms (RMS) from the fitted grid. Where the notes keep no steady beat (a ritardando), the beats are counted so that the bars on both sides stay in step and put on the notes; in free playing the tracked beats stay, each moved onto the note struck on it (`snap_beats`). A chord held through a pause has fewer notes than beats: its beats are counted all the same, as long as the pause makes them. Which quarter of a stretch's grid is the beat is the tracker's to say; but it can take the off-beat for the beat through a whole passage (a figure whose lowest notes fall between the beats) and right itself later. Stretches whose notes run on from one into the next keep one beat, decided by all the tracked beats within them; where the tracker has changed its mind along the way, the passage is taken to begin on a beat if one of its two answers says so (the third development video: twenty bars written half a beat late, then a bar of 6/4, before this). A few chords far apart, each struck by a hand a hundredth of a second across, sit on many a grid and keep no tempo: a stretch has a note on every other beat at least, most of them on its grid. |
 | Bars | Within a stretch the beats are counted, so the bar lines are too: in the tracker's meter, at the phase most of its bar lines agree on. A tracker that loses a beat no longer shortens a bar; a real change of phase (the first video has two bars of 2/4) is kept where three or more of its bar lines agree on it. |
-| Tempo marks | From the bars' own lengths: each lasting tempo is marked where it begins, as it is (106, not a metronome's 105); a bar or two slower than what went before is marked *rit.* (`notate_exact.py`). |
+| Tempo marks | From the bars' own lengths: each lasting tempo is marked where it begins, as it is (106, not a metronome's 105); a bar or two slower than what went before is marked *rit.*, and *a tempo* where the tempo it slowed from returns. A tracked bar's length says its tempo to a few beats a minute, no better: that is no new tempo (`notate_exact.py`). |
 | Positions | Notes struck together are one moment and are written together. Within a beat, the notes of a hand lie on the simplest grid that fits: halves, quarters, thirds or sixths of the beat (`quantize_onsets`). In a video read coarsely (a screen recording at 30 frames a second: a note a frame late is nearer a third of the beat than its quarter), each beat line follows the notes around it, a triplet needs two notes on thirds, and a note between two quarters goes to the stronger. |
 | Voices | Notes of one hand struck and held together are a chord; a note held while others move is a second voice, for as long as something is held: once every voice has ended the next chord starts in one voice again, so a single line stays one voice (`plan_voices`). |
 | Staves | A video colours notes by track, and a track is not always a hand: the second development video draws accompaniment chords two octaves wide in its left-hand colour. Notes struck together on one staff and further apart than a hand reaches (a tenth) are divided at the gap nearest middle C, and the far part goes to the other staff (`share_wide_chords`). |
-| Note values | Read finely, a bar's length is the note value, but for the sliver cut off a note that is struck again: a note runs to the next of its voice across that sliver and otherwise ends on the plainest place near its measured end, the rest after it written out. Read coarsely, lengths are a player's: a note runs on across a gap of a sixteenth or less, and otherwise gets the plainest value it could be a shortened form of (`settle_lengths`). |
+| Note values | Read finely, a bar's length is the note value, but for the sliver cut off a note that is struck again: a note runs to the next of its voice across that sliver and otherwise ends on the plainest place near its measured end, the rest after it written out. Read coarsely, lengths are a player's: a note runs on across a gap of a sixteenth or less, and otherwise gets the plainest value it could be a shortened form of (`settle_lengths`). And where the notes are heard to ring on after their keys are released (the pedal holds them: a third of a note's attack still sounds 0.3 s after its key is up in the two filmed development videos, a tenth or nothing in the two drawn ones), how long a key was down is not how long its note lasts: a note runs to the next of its voice within two beats, and otherwise ends on a beat, the one nearest its key's release. Under the pedal a key held into the next note is legato, not a second voice. |
 | Ties | A note is cut at bar lines, and inside a bar wherever it would hide a beat stronger than the one it starts on, but for the syncopations written whole by custom: sixteenth, eighth, sixteenth; sixteenth, dotted eighth; eighth, quarter, eighth (`split_value`). |
 
 Rests, beams, tuplet brackets, accidentals and clefs are then the model repository's own engraving
@@ -422,6 +494,21 @@ with its outcome; per-stage timings are stored on the job record and returned by
     the left hand's bass notes change on the bar lines so drawn, but whether the short bar
     falls before or after the phrase it borders is the tracker's word. Synthesia draws its
     own bar lines across the roll; they are not read.
+  - A filmed keyboard read from one picture of its roll (`stacked.py`) has limits of its own. A
+    black key between two white keys that both sound lies under their blocks and cannot be
+    seen (how long that was so is reported; a few hundredths of a second in the development
+    videos). The lanes are measured on blocks that fall alone, so a video needs some: with
+    fewer than three white keys ever played alone the reading stops rather than guess. The
+    roll must scroll at one speed. The keys do not light, so nothing confirms a note but the
+    picture it was read from and the audio; and the audio confirms each key's name (its pitch
+    rises in the sound when its notes are struck, the semitone either side does not) only for
+    keys that are not always doubled at the octave. Which hand plays a note is where the
+    player's hands are, which says nothing sure when they cross. Notes are written as ringing
+    when the audio says the pedal holds them: how long each key was really down is then not
+    in the score, and a pedal released mid-phrase is not either.
+  - Which quarter of the beat is the beat is heard by the tracker and, where it contradicts
+    itself along one unbroken run of notes, settled by taking the run to begin on a beat: a
+    piece that really begins off the beat, tracked two ways, would be written wrongly.
   - A video recorded from the screen at 30 frames a second is read to about a hundredth of a
     second for most notes and a frame (0.03 s) for some: enough to place every note on its
     sixteenth, not to tell a triplet from a late sixteenth by one note, and its note lengths

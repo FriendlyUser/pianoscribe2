@@ -138,6 +138,61 @@ keyboard found), banners are dropped wherever they are read, and the first two v
 before: every note with the same key and hand, starts and ends within 4 ms (first) and 16 ms
 (second) of the earlier reading.
 
+### Two filmed keyboards at 480p
+
+Two more videos are of a real piano filmed from above, 854 by 480: all 88 keys across the frame,
+16.4 columns to a white key, the player's hands over them, and every note a block in one colour
+scheme for both hands. They are read from one picture of each video's whole roll
+(`app/visual/stacked.py`); the reader above finds no keyboard in either. Neither has a reference
+score here, so what follows are checks, not scores against a truth.
+
+| | Piano cover with strings, 4:00 | Piano cover, 4:18 |
+|---|---|---|
+| Blocks | white, in a violet glow, round at the ends; sparks where they land; a watermark above the keys | cyan turning pink as they fall, textured; sparks; a caption drifting above the keys |
+| Read in | the weakest of the three channels (the glow is dark there two columns from a block) | blue (the only channel every block is bright in) |
+| Keyboard | A0 to C8, filmed, dim (white keys at grey 130) under a strip of violet light; a white key 16.3 columns in the middle of the frame, 17.0 at its ends | A0 to C8, filmed, bright in the middle and dim at the ends; 16.2 to 16.8 columns |
+| Fall of the notes | 120.1 rows a second, 2.08 s on screen; the four bands of the screen 0.24 rows apart before alignment | 96.4 rows a second, 2.68 s on screen; bands 0.00 apart |
+| Lanes, measured on the roll | 16.434 columns apart, white blocks 18.5 wide, black 10.0; 39 lanes measured, to 0.2 of a column of an even lattice; up to 6.3 columns from the filmed keys at the ends | 16.405 apart, white 20.0, black 14.3; 34 lanes measured; up to 4.3 columns from the filmed keys |
+| Notes read | 1302 (right hand 684, left 618) | 1975 (right hand 1140, left 835) |
+| Hands | from the player's hands, seen on both sides of the divide in 92% of frames; no right-hand note below a left-hand note struck with it | from the player's hands, 99.9% of frames; none |
+| Blocks parted at pinched corners | 0 (no block touches another on its key) | 12, each a visible pinch, each 12 to 14 rows after its block began (the video's shortest block); one shallower dip left whole, with no attack in the audio |
+| Lit columns of the picture with no key on / columns of a key that is on but dark | 0.8% / 0.9% of 480,716, never more than 4 rows running (the fringe at blocks' round ends) | 1.0% / 1.1% of 833,800, never more than 3 rows |
+| Anything between dark and a block's brightness, away from every block | nothing over 0.39 of a block's brightness | nothing over 0.30 |
+| A black key out of sight between two sounding white keys | 0.03 s in all | 0.02 s in all |
+| Audio: offset, and attacks with a note onset within 60 ms | notes 65 ms before the sound; 275 of 276 (the other is no piano note: the recording has strings) | notes 151 ms before the sound; 499 of 501 |
+| Onsets against the nearest attack | within 5 ms (median deviation) | within 4 ms |
+| Agreement with the pitch of the audio: as named / a semitone either way / an octave down, up | 0.42 / 0.13, 0.14 / 0.35, 0.27 | 0.58 / 0.17, 0.16 / 0.50, 0.35 |
+| Each key's own pitch rising in the audio as its notes are struck, against the semitone either side (bass keys measured over 0.7 s) | 44 of the 45 keys played, by 1.5 times at the least and 6 times typically (the 45th, C sharp 2, never sounds without a note that shares its overtones) | 42 of the 43 keys played, by 1.3 times at the least and 4 times typically (the 43rd, B6, is one soft note in a run) |
+| Notes outside the key | 2 of 1302: an A natural in octaves leading into the change of key | 0 of 1975: every note is in E major |
+| Notes ringing on 0.3 s after their keys are up | 0.23 of their attack (the pedal): written out, not as short notes and rests | 0.24: likewise |
+| Beat | a player's: 18 steady stretches at 113 to 117 to the minute, onsets 6 to 14 ms (RMS) from each grid | steady as a click: 120.00 to the minute throughout, onsets 2 to 5 ms from the grid, with a sawtooth of 6 ms either way every 16.7 s that is in the video itself |
+| Score | A flat major, then B flat major from bar 76; 4/4 throughout, 110 bars; quarter = 115, then 117; *rit.* and *a tempo* at bars 37 and 38 | E major; 4/4 with one bar of 2/4, where the music has two beats more before its last chorus and the tracker hears them too; 117 bars; quarter = 120; *rit.* into a slow close |
+
+The first of the two is where the beat tracker misled the score. For its first 20 bars the
+left hand repeats a figure of four eighths whose highest note is on the beat and whose lowest is
+on the off-beat, and the tracker took the off-beat for the beat; where the figure gives way to
+one with its bass note first, the tracker put itself right, half a beat later. Written on the
+tracked beats, the piece began with a pickup, every chord of the first 20 bars changed half a
+beat early, and bar 21 had six beats. But from the first note to that bar are 160 eighths to
+within a hundredth of a second: twenty bars of 4/4 exactly, the notes never breaking step. Notes
+that run on keep one beat (`steady_beats.set_phases`), and the score now begins on its downbeat
+with a four-bar introduction and a sixteen-bar verse whose chords change every two bars, on the
+bar lines.
+
+The slow close of the second showed two more things. A handful of chords far apart, each
+struck by a hand a hundredth of a second across, had been taken for a stretch of steady tempo
+(at 125 to the minute, then 117): counted once each, they are too few, and the close is written
+on the tracked beats, each moved onto the chord struck on it. And the octave lines were engraved
+wrongly: Verovio starts one at the next note it reads after the line's own place in the file,
+whichever staff that note is on, so the left hand's *8vb* was drawn a bar late over the right
+hand's staff, and the right hand's *8va* began a bar late. They are now written where it reads
+them (`app.engrave.verovio_engine.ottavas_in_reading_order`).
+
+What these checks cannot show: that every block's length is what its key was held (the blocks
+have a least height, 7 and 12 rows, and under the pedal the lengths are not written anyway);
+that a pedalled note stopped where the score ends it; and which hand played a note where the
+hands crossed or shared a chord.
+
 ## Score references
 
 A reference is a JSON file transcribed by hand from a printed score:

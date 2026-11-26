@@ -79,7 +79,11 @@ class VideoReading(BaseModel):
     lowest_key: str  # of the keyboard shown, e.g. "A1"
     highest_key: str
     octave_from: str  # "full keyboard", "audio" or "middle of the keyboard"
-    hands_from: str  # "colours" or "pitch"
+    hands_from: str  # "colours", "hands" (the player's own, in a filmed video) or "pitch"
+    # A video read from one picture of its roll, whose keys do not light: the strong attacks in its
+    # audio, and how many of them have a note read within 0.06 s. None when not counted.
+    attacks_heard: int | None = None
+    attacks_with_a_note: int | None = None
     # Share (0..1) of the notes read that are in the score, and of the score's notes that were read.
     score_kept: float | None = None
     score_backed: float | None = None
