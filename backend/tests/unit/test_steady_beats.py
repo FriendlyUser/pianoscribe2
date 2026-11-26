@@ -24,7 +24,7 @@ from exact_score import (  # noqa: E402
     settle_lengths,
     share_wide_chords,
 )
-from notate_exact import mark_played  # noqa: E402
+from notate_exact import mark_played, signatures_the_notes_bear_out  # noqa: E402
 from steady_beats import PRECISE, steady_beats  # noqa: E402
 
 # One bar's rhythm in sixteenths, a melody over a bass note on every beat.
@@ -475,3 +475,18 @@ def test_played_music_has_one_tempo_mark_and_its_ritardandos() -> None:
     closing = list(breathing)
     closing[37:] = [104.0, 96.0, 115.0]
     assert marks(closing) == [(0, "metronome_quarter_115"), (37, "tempo_rit")]  # nothing returns to tempo at the close
+
+
+def test_a_change_of_key_the_notes_speak_against_is_not_written() -> None:
+    e_major = [64, 66, 68, 69, 71, 73, 75]
+    # A bridge the tracker hears in B major, between two stretches of E: its notes have A natural
+    # three times and A sharp never. Written in B major it takes three accidentals, in E major none.
+    bridge = [[64, 68, 71, 75], [66, 69, 73], [64, 69, 71], [68, 69, 75]]
+    heard: list[int | None] = [*[4] * 8, *[5] * 4, *[4] * 4]
+    assert signatures_the_notes_bear_out(heard, [*[e_major] * 8, *bridge, *[e_major] * 4], 4) == ([4] * 16, 1)
+    # A change of key the notes go along with stands: from there on they are in the new key.
+    a_flat, b_flat = [56, 58, 60, 61, 63, 65, 67], [58, 60, 62, 63, 65, 67, 69]
+    up_a_tone: list[int | None] = [*[-4] * 6, *[-2] * 6]
+    assert signatures_the_notes_bear_out(up_a_tone, [*[a_flat] * 6, *[b_flat] * 6], -4) == (up_a_tone, 0)
+    # Notes that say nothing either way leave the tracker its word; bars it says nothing of take the overall signature.
+    assert signatures_the_notes_bear_out([None, None, 5, 5], [[64, 71]] * 4, 4) == ([4, 4, 5, 5], 0)
