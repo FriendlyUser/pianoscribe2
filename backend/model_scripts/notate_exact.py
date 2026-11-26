@@ -38,6 +38,46 @@ def signature_from_notes(pitches: list[int]) -> int:
     return max(range(-6, 7), key=lambda fifths: (inside(fifths), -abs(fifths)))
 
 
+def outside(pitches: list[int], fifths: int) -> int:
+    """How many of ``pitches`` are outside the major scale of the key signature ``fifths``."""
+    tonic = (7 * fifths) % 12
+    return sum((pitch - tonic) % 12 not in MAJOR_SCALE for pitch in pitches)
+
+
+def signatures_the_notes_bear_out(
+    signatures: list[int | None], pitches: list[list[int]], overall: int
+) -> tuple[list[int], int]:
+    """``signatures`` (per bar, as the key tracker heard them) without the changes of key the notes speak
+    against, and how many changes that is. ``pitches``: the notes of each bar; ``overall``: the signature
+    for bars the tracker says nothing about.
+
+    The tracker hears where the harmony leans: a bridge that sits on another chord for a dozen
+    bars is another key to it. A key signature is there to save accidentals, and here the notes
+    are known exactly. So each change the tracker hears is put to them: where the notes from
+    that change to the next fit the signature in force before it better than the new one
+    (fewer of them outside its scale), the signature stays as it was.
+    """
+    heard = [overall if signature is None else signature for signature in signatures]
+    out = list(heard)
+    kept_back = 0
+    in_force: int | None = None
+    start = 0
+    while start < len(heard):
+        end = start
+        while end + 1 < len(heard) and heard[end + 1] == heard[start]:
+            end += 1
+        signature = heard[start]
+        if in_force is not None and signature != in_force:
+            notes = [pitch for bar in range(start, end + 1) for pitch in pitches[bar]]
+            if outside(notes, signature) > outside(notes, in_force):
+                signature = in_force
+                kept_back += 1
+        out[start : end + 1] = [signature] * (end + 1 - start)
+        in_force = signature
+        start = end + 1
+    return out, kept_back
+
+
 def mark_tempos(measures: list, starts: list[float], end: float, steady: object | None) -> list[tuple[int, int]] | None:
     """Metronome marks from the bars' own lengths, where the notes keep a steady beat; the marks set (bar, tempo).
 
@@ -163,10 +203,17 @@ def main() -> None:
     starts = [bar.seconds for bar in plan.bars]
     overall = signature_from_notes([int(n["pitch"]) for n in notes])
     signatures: list[int | None] = [None] * len(plan.bars)
+    key_changes_not_written = 0
     if args.keys:
         tracked = json.loads(Path(args.keys).read_text(encoding="utf-8")).get("keys") or []
         if tracked:
-            signatures = bar_signatures(tracked, starts)
+            sounding: list[list[int]] = [[] for _ in plan.bars]
+            for value in plan.written:
+                sounding[value.bar] += value.pitches
+            borne_out, key_changes_not_written = signatures_the_notes_bear_out(
+                bar_signatures(tracked, starts), sounding, overall
+            )
+            signatures = list(borne_out)
 
     measures = [
         Measure(
@@ -213,6 +260,7 @@ def main() -> None:
         "let_ring": let_ring,
         "notes_let_ring": plan.rung,
         "octaves_rolled": plan.rolled,
+        "key_changes_not_written": key_changes_not_written,
         "beats_put_back": plan.beats_put_back,
         "tempo_marks": [{"bar": bar + 1, "quarter": tempo} for bar, tempo in marks or []],
         "steady_beat": {

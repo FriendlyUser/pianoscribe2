@@ -118,6 +118,20 @@ def test_every_seam_between_touching_notes_is_found(read) -> None:
     assert len(reading.notes) == len(truth)
 
 
+def test_the_glow_past_the_end_of_a_bar_is_not_a_note(read) -> None:
+    # A screen recording leaves a faint band a few rows past the end of a bar: not background, and
+    # nowhere near the colour of a bar. Where the key is struck again at once it stands by itself
+    # between two bars, as long as the shortest note there could be.
+    truth = [VideoNote(67, 0.3 * i, 0.3 * i + 0.18, "right") for i in range(6)]
+    truth += [VideoNote(61, 0.3 * i, 0.3 * i + 0.18, "right") for i in range(6)]
+    truth += [VideoNote(48, 0.0, 1.8, "left"), VideoNote(52, 0.6, 1.5, "left")]
+    style = Style(width=960, height=540, title_seconds=0.5, labels=False, afterglow=True)
+    reading, lead = read(falling(truth), style)
+    onsets, ends = compare(reading, falling(truth), lead)
+    assert np.abs(onsets).max() < 0.03 and np.abs(ends).max() < 0.05
+    assert reading.facts["notes"]["faint_pieces_dropped"] >= 6
+
+
 @pytest.mark.xfail(strict=True, reason="known limit: see the test")
 def test_a_note_name_on_a_narrow_bar_is_not_a_seam(read) -> None:
     # Pins a known limit. At 720p with 61 keys shown, the bar of a black key is about 20 pixels

@@ -62,6 +62,7 @@ class Style:
     flare: bool = True
     keys_light: bool = True
     film: bool = False  # a dimmed film plays behind the notes instead of the still background
+    afterglow: bool = False  # a screen recording's smear: a faint band a few rows past the end of every bar
     filmed: bool = False  # a filmed keyboard: shaded keys that do not light, and the player's hands over them
     glow: bool = False  # both hands' notes alike: white blocks with round ends, in a glow of ``right``
     sparks: bool = False  # sparks rise from where the notes land
@@ -149,6 +150,10 @@ def _roll(notes: list[VideoNote], style: Style, layout: _Layout, speed: float, s
         if box[3] - box[1] < 2:
             continue
         r = min(radius, (box[3] - box[1]) // 2, (box[2] - box[0]) // 2)
+        if style.afterglow:
+            # Not background, and nowhere near the colour of a bar: a third of the way to the darkest outline.
+            faint = tuple(b + 34 for b in style.background)
+            draw.rectangle([box[0] + 1, box[1] - 11, box[2] - 1, box[1] - 7], fill=faint)
         draw.rounded_rectangle(box, radius=r, fill=fill, outline=outline, width=max(1, round(0.03 * layout.key_width)))
         if style.labels:
             text = NAMES[note.pitch % 12]

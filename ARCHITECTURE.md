@@ -141,7 +141,11 @@ next section.
    over every key before the notes begin, which read higher up is 30 notes at once. A glissando,
    whose keys are struck one after the other, is kept. A piece of a bar shorter than a twentieth
    of a second, touching another on its key, is joined back to it: no key is struck twice that
-   fast, and such slivers are false seams (four in the second development video). And a seam too
+   fast, and such slivers are false seams (four in the second development video). A piece that
+   is not background and yet nowhere has the colour of a bar is no bar either: a screen recording
+   leaves a glow a few rows past the end of a bar, dimmer than the bar's outline, and where the
+   key is struck again at once that glow stands by itself between the two bars (one in the second
+   development video, 23 ms long, which had been read as a note of the other hand). And a seam too
    faint to cut on outright (in a 720p picture two touching bars can leave a notch at one corner
    only, or one blurred to half the strip) is cut when something else agrees: the notch is half
    the depth of a plain one, or another key's bar has one at the same moment (a chord struck
@@ -253,12 +257,13 @@ are placed by rule:
 | Voices | Notes of one hand struck and held together are a chord; a note held while others move is a second voice, for as long as something is held: once every voice has ended the next chord starts in one voice again, so a single line stays one voice (`plan_voices`). |
 | Staves | A video colours notes by track, and a track is not always a hand: the second development video draws accompaniment chords two octaves wide in its left-hand colour. Notes struck together on one staff and further apart than a hand reaches (a tenth) are divided at the gap nearest middle C, and the far part goes to the other staff (`share_wide_chords`). |
 | Note values | Read finely, a bar's length is the note value, but for the sliver cut off a note that is struck again: a note runs to the next of its voice across that sliver and otherwise ends on the plainest place near its measured end, the rest after it written out. Read coarsely, lengths are a player's: a note runs on across a gap of a sixteenth or less, and otherwise gets the plainest value it could be a shortened form of (`settle_lengths`). And where the notes are heard to ring on after their keys are released (the pedal holds them: a third of a note's attack still sounds 0.3 s after its key is up in the two filmed development videos, a tenth or nothing in the two drawn ones), how long a key was down is not how long its note lasts: a note runs to the next of its voice within two beats, and otherwise ends on a beat, the one nearest its key's release. Under the pedal a key held into the next note is legato, not a second voice. |
+| Key signature | The key is heard, by the key tracker; a key held for fewer than eight bars keeps the signature in force. But the tracker hears where the harmony leans, and a key signature is there to save accidentals. The notes are known exactly here, so each change of key the tracker hears is put to them: where the notes from that change to the next fit the signature in force before it better than the new one (fewer of them outside its scale), the signature stays (`signatures_the_notes_bear_out`). The bridge of the first development video, thirteen bars the tracker hears in G sharp minor between two stretches of C sharp minor, has an A natural three times and an A sharp never: in five sharps it took three accidentals, in four it takes none, and the same bridge in another video of the song is heard in four throughout. A change the notes go along with (a last chorus a tone higher) is written as before. |
 | Ties | A note is cut at bar lines, and inside a bar wherever it would hide a beat stronger than the one it starts on, but for the syncopations written whole by custom: sixteenth, eighth, sixteenth; sixteenth, dotted eighth; eighth, quarter, eighth (`split_value`). |
 
 Rests, beams, tuplet brackets, accidentals and clefs are then the model repository's own engraving
 rules (`notate_exact.py`). What still comes from the audio models is only what the picture cannot
 show: roughly where the beat is and which beats begin a bar (SheetSage2-Refined), and the key (its
-key tracker). `PS_VIDEO_SCORE_WRITER=model` sends the notes to the score model instead.
+key tracker), which the notes may speak against. `PS_VIDEO_SCORE_WRITER=model` sends the notes to the score model instead.
 
 Because no transcriber and no score model run, this path needs no GPU in practice: on four CPU
 cores, a 4.4-minute 1080p60 video takes about four minutes (two to read the frames, one each for

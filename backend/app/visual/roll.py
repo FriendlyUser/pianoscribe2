@@ -671,6 +671,31 @@ def faint_notches(
     return found
 
 
+def without_a_bars_colour(bars: list[Bar], roll: Roll, zones: Zones, keyboard: Keyboard) -> list[bool]:
+    """Per bar, whether it nowhere has the colour of a bar.
+
+    A pixel that differs a little from the empty picture is not background (``FAINT``): that
+    takes in the dark outline drawn around a bar, so that an outline does not part the bar it
+    runs through. It also takes in what a screen recording leaves a few rows past a bar's end:
+    a glow, dimmer than the outline, and where another bar follows closely on the same key, a
+    piece of its own between the two. A piece made of that alone is covered, and is no bar: a
+    bar has a bar's colour (``SOLID``) across half its key in one row of it at the least.
+    """
+    faint = []
+    for bar in bars:
+        if keyboard.keys[bar.key].black:
+            parts = [int(zones.left[bar.key]), int(zones.right[bar.key])]
+        else:
+            parts = [int(zones.core[bar.key])]
+        widths = [float(zones.x1[part] - zones.x0[part]) if part >= 0 else 0.0 for part in parts]
+        a, b = int(np.floor(bar.start)), max(int(np.ceil(bar.end)), int(np.floor(bar.start)) + 1)
+        share = sum(_zone(roll.solid, part)[a:b] * width for part, width in zip(parts, widths, strict=True)) / sum(
+            widths
+        )
+        faint.append(bool(float(np.max(share)) < COVERED))
+    return faint
+
+
 def read_bars(roll: Roll, zones: Zones, keyboard: Keyboard, *, least_rows: int = 4) -> list[Bar]:
     """Every bar on the roll, in order of key and time."""
     present, doubtful = key_presence(roll, zones, keyboard)

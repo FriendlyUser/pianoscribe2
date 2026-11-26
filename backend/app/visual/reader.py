@@ -54,6 +54,7 @@ from app.visual.roll import (
     reduce_strip,
     scroll_speed,
     unroll,
+    without_a_bars_colour,
 )
 
 log = get_logger(__name__)
@@ -964,6 +965,8 @@ def read_video(
     roll = unroll_readings(readings, shown, even, layout)
     least_rows = max(3, int(round(0.02 * info.fps * speed)))  # nothing shorter than a fiftieth of a second
     bars, slivers = merge_slivers(read_bars(roll, zones, keyboard, least_rows=least_rows), SLIVER * info.fps * speed)
+    faint_pieces = without_a_bars_colour(bars, roll, zones, keyboard)
+    bars = [bar for bar, faint in zip(bars, faint_pieces, strict=True) if not faint]
     bars, overlays = drop_overlays(bars, keyboard, tolerance=3.0 * speed)
     notches = faint_notches(
         roll,
@@ -1105,6 +1108,7 @@ def read_video(
             "from_lit_keys_only": recovered,
             "overlay_bars_dropped": overlays,
             "slivers_joined": slivers,
+            "faint_pieces_dropped": sum(faint_pieces),
             "separated_at_faint_seams": faint,
             "let_ring": _let_ring(heard),
         },

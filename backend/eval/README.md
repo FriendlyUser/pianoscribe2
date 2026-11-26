@@ -80,14 +80,14 @@ people's arrangements of copyrighted songs.
 | | Rendered tutorial, 1080p60, 4:21 | Synthesia screen recording, 720p30, 4:16 | Filmed keyboard, film behind the notes, 1080p60 (AV1), 4:16 |
 |---|---|---|---|
 | Keyboard read | A1 to A6 (61 keys); the "C4" printed on the keyboard is where middle C was put | A1 to B5 (51 keys), note names printed on every key | F1 to A6 (65 keys), filmed, the player's hands over it |
-| Notes read | 929 (right hand 622, left 307) | 1415 (right hand 549, left 866) | 2251 (hands split at middle C: right 1332, left 919) |
+| Notes read | 929 (right hand 622, left 307) | 1414 (right hand 549, left 865) | 2251 (hands split at middle C: right 1332, left 919) |
 | Separated from a touching note | 154 | 58 (12 of them at faint seams) | 671 |
-| Bars whose key was seen lit | 929 of 929 | 1412 of 1415 | the keys do not light: not used |
+| Bars whose key was seen lit | 929 of 929 | 1411 of 1414 | the keys do not light: not used |
 | Keys lit with no bar | 0 | 0 | not used |
 | Octave, by agreement with the audio | as placed: 0.70, against 0.44 an octave down and 0.38 up | as placed: 0.56, against 0.44 and 0.35 | as placed: 0.66, against 0.53 and 0.42 |
 | Attacks in the audio (jumps in its rise) with no note onset within 60 ms | 0 of 689 | 6 of 363, none beyond 150 ms | 21 of 656 (counted the earlier way, as below) |
 | Frame-to-frame motion | even | uneven (0 to 10 rows a frame): followed frame by frame | even |
-| Score | E major, 4/4 with two bars of 2/4, quarter = 106, then 118, 120, 124 and 65; every note read is in it and nothing else; every note on its hand's staff | F major, 4/4, quarter = 100, the tempo the recording itself displays; every note read is in it and nothing else; 41 notes of chords too wide for one hand on the other staff | E major, 4/4, quarter = 105, 113 bars; every note read is in it, and 99.6% of its notes are notes read |
+| Score | E major throughout (the tracker hears thirteen bars of the bridge in another key, which the notes speak against: see below), 4/4 with two bars of 2/4, quarter = 106, then 118, 120, 124 and 65; every note read is in it and nothing else; every note on its hand's staff | F major, 4/4, quarter = 100, the tempo the recording itself displays; every note read is in it and nothing else; 41 notes of chords too wide for one hand on the other staff | E major, 4/4, quarter = 105, 113 bars; every note read is in it, and 99.6% of its notes are notes read |
 | The same notes through the score model instead | 936 notes written for 929, three on the wrong staff, the opening triplets written as sixteenths | not run | not run |
 
 What this does and does not establish. For the first video every check agrees, and one more that
@@ -106,10 +106,31 @@ What was wrong in the second reading was found in the frames instead. Four notes
 each, one piece a sliver of 20 to 50 ms: joined back. And in runs of repeated notes whose bars
 touch, some seams left a notch at one corner only, or one blurred to half the strip, and two notes
 were read as one: twelve such notes are now separated (`faint_notches`), each a second block with
-its own printed name in the frames. The second video now reads 1415 notes (right hand 549, left
+its own printed name in the frames. The second video then read 1415 notes (right hand 549, left
 866), 1412 with their key seen lit; the first is unchanged at 929. Not every such seam need be
 found: one that leaves no notch at all at 720p would still be read as one long note, and nothing
 measured here would show it.
+
+One of those 1415 was no note. Between two G4s struck a tenth of a second apart stood a piece
+23 ms long, three rows of the roll, read as a note of the left hand and written as a G4 under
+the right hand's. On the roll it is what the screen recording leaves past the end of the first
+bar: half the pixels across the key differ from the empty picture by more than 20 levels there
+and one in ten by more than 45, where every row of a bar's body does so right across; its colour
+is a grey about half as bright as the bars on either side of it. Such a piece is covered, and so
+was read, but it has a bar's colour nowhere, and is now dropped (`roll.without_a_bars_colour`). The video reads 1414
+notes (right hand 549, left 865), 1411 with their key seen lit: the three without are notes of
+left-hand chords whose other keys were seen lit, each as long as its chord. The first video is
+unchanged at 929.
+
+The first video's score had a change of key it did not need. The key tracker hears its bridge
+(bars 74 to 86) in G sharp minor, between two stretches of C sharp minor, and the score went to
+five sharps and back. The 96 notes of those bars have an A natural three times and an A sharp
+never: every one is in E major, and in five sharps three took an accidental. A change of key is
+now written only if the notes from there to the next change fit the new signature at least as
+well as the one in force (`notate_exact.signatures_the_notes_bear_out`); the score stays in four
+sharps and has no accidental left. The change of key in the hand-played filmed video, a tone up
+for the last chorus, is one its notes go along with (none outside B flat major after it, 96
+outside A flat major), and stands.
 
 How the scores are written was measured on the same two videos. Each note's onset was compared
 with the grid it is written on:
