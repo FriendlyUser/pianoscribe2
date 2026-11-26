@@ -102,7 +102,10 @@ next section.
    boundaries, a pattern with no symmetry, which names every key. Note names printed on the keys
    do not disturb this. Some tutorials film a real keyboard, with the player's hands on it and
    the notes drawn above: its rows are shaded, so about a fifth of each is neither clearly white
-   nor clearly black, and a black key is wherever the picture is nearer black than white (its
+   nor clearly black. That looser level is tried only when no drawn keyboard is found: on a
+   drawn one it moves where the rows end by a pixel and the keys' sides by a fraction of one,
+   enough to lose the corners of touching bars (three notes in the first development video). A
+   black key is wherever the picture is nearer black than white (its
    sloping sides catch the light). Where the hands rest most of the time they stay in the median;
    those columns (coloured, where keys are grey) are left out of the pattern, and the black keys
    under them placed where the others of their kind are.
@@ -112,9 +115,12 @@ next section.
    far each still has to travel. One row of the rebuilt roll is one pixel of travel: 4 ms in a
    1080p video. A screen recording repeats and skips frames, so how far the picture really moved
    between two frames is measured rather than assumed (one of the two development videos moves
-   0, 3, 9, 6, 1 ... rows from frame to frame). The strip is 2.4 white keys above the keyboard,
-   clear of the flare that bursts where a note lands (nearly two white keys high in the third
-   development video).
+   0, 3, 9, 6, 1 ... rows from frame to frame). The strip is 1.6 white keys above the keyboard:
+   the further up, the more such uneven motion blurs the moment a bar lands (the second
+   development video read at 2.4 times its notes against its audio too loosely for the audio's
+   timing to be applied, and they come 87 ms early). With a film behind the notes it is 2.4,
+   clear of the flare that bursts where a note lands in the third development video (nearly two
+   white keys high).
 
    Behind the notes is usually a still, nearly black picture, and whatever differs from it is a
    bar. Some videos play a dimmed film there instead. That is recognised in the sampled frames:
@@ -129,7 +135,11 @@ next section.
    over one neighbour has no part over the other; beside that neighbour sounding, its bar is
    told by its own colour). A bar is there wherever its key's columns are not background. Two bars that touch (a quarter of all notes in the first
    development video) are told apart by the notch their rounded corners leave at the sides,
-   which the note name printed inside a bar never reaches.
+   which the note name printed inside a bar never reaches. More bars than two hands have
+   fingers, on neighbouring keys and struck and released together, are one thing laid across
+   the keyboard and are dropped: the second development video scrolls its title banner down
+   over every key before the notes begin, which read higher up is 30 notes at once. A glissando,
+   whose keys are struck one after the other, is kept.
 4. **Hands** (`hands.py`) from the colour of the bars, compared on hue so that the darker shade
    used for black keys stays with its hand. A video in one colour is split at middle C.
 5. **Checks** (`reader.py`, `audio.py`), reported with every result:
@@ -401,7 +411,8 @@ with its outcome; per-stage timings are stored on the job record and returned by
   - With a film behind the notes, anything as bright as a bar is read as one: in the last
     seconds of the third development video, the closing credits that appear over the notes add
     about ten short notes, and the glow of the final chords a few more. A flare that reaches
-    more than 2.4 white keys above the keyboard would add notes beside the one landing.
+    more than 2.4 white keys above the keyboard would add notes beside the one landing; with no
+    film behind the notes, more than 1.6.
   - Written by rule, the score has no dynamics, pedal or articulation, at most two voices per
     hand (a third is cut short where it would begin; the count is reported), nothing shorter
     than a sixth of a beat, and more ties than an engraver would use.

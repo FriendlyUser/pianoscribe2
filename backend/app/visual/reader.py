@@ -112,13 +112,15 @@ class Layout:
         return (self.band_top + self.band_rows - 1.5) - (self.speed_top + 0.5)
 
 
-def plan_layout(keyboard: Keyboard, fps: float, *, band_rows: int | None = None) -> Layout:
+def plan_layout(keyboard: Keyboard, fps: float, *, band_rows: int | None = None, film: bool = False) -> Layout:
+    """Where to read: ``film`` when a film plays behind the notes (see ``backdrop_floor``)."""
     roll_height = keyboard.top
     period = keyboard.white_width
-    # High enough to clear the flare drawn where a note lands, low enough to stay near it. A flare
-    # bursts at the moment a note lands: in one video it reaches nearly two white keys up, over the
-    # neighbouring keys.
-    lead = max(round(2.4 * period), round(0.1 * roll_height))
+    # High enough to clear the flare drawn where a note lands, low enough to stay near it: the
+    # further up, the more a screen recording's uneven motion blurs the moment a bar lands. The
+    # one video seen with a film behind its notes also bursts a flare where a note lands, nearly
+    # two white keys up over the neighbouring keys; its notes are read higher.
+    lead = max(round((2.4 if film else 1.6) * period), round(0.1 * roll_height))
     if band_rows is None:
         # Tall enough that no row of the roll slips between two frames unless the
         # whole height is crossed in under a second.
@@ -439,6 +441,54 @@ def _runs(mask: NDArray[np.bool_]) -> list[tuple[int, int]]:
     return [(int(a), int(b)) for a, b in zip(edges[::2], edges[1::2], strict=True)]
 
 
+# More bars than two hands have fingers, all on neighbouring keys and starting and ending together,
+# are one thing laid across the keyboard (a title banner, a card, a wipe), not notes.
+OVERLAY_BARS = 11
+
+
+def _in_order(values: list[float]) -> bool:
+    """Whether ``values`` rise or fall along the list (rank correlation of at least 0.8; ties share a rank)."""
+    v = np.asarray(values, dtype=np.float64)
+    ranks = (v[None, :] < v[:, None]).sum(axis=1) + ((v[None, :] == v[:, None]).sum(axis=1) - 1) / 2.0
+    if len(v) < 3 or float(ranks.std()) == 0.0:
+        return False
+    return abs(float(np.corrcoef(ranks, np.arange(len(v)))[0, 1])) >= 0.8
+
+
+def drop_overlays(bars: list[Bar], keyboard: Keyboard, tolerance: float) -> tuple[list[Bar], int]:
+    """(``bars`` without those of overlays, how many were dropped). ``tolerance``: roll rows within which
+    bars count as starting, or ending, together.
+
+    A tutorial may scroll a banner (the song's title, say) down over the whole keyboard before the
+    notes begin. Read like the notes, it is a bar on every key it crosses, all struck at one moment
+    and released at another: dozens of neighbouring keys at once, which no two hands can play.
+    """
+    order = sorted(range(len(bars)), key=lambda i: bars[i].start)
+    dropped: set[int] = set()
+    first = 0
+    while first < len(order):
+        last = first
+        while last + 1 < len(order) and bars[order[last + 1]].start - bars[order[first]].start <= tolerance:
+            last += 1
+        group = order[first : last + 1]
+        first = last + 1
+        if len(group) < OVERLAY_BARS:
+            continue
+        by_end = sorted(group, key=lambda i: bars[i].end)
+        while by_end:
+            same = [i for i in by_end if bars[i].end - bars[by_end[0]].end <= tolerance]
+            by_end = by_end[len(same) :]
+            pitches = sorted((keyboard.keys[bars[i].key].pitch, i) for i in same)
+            # Runs of neighbouring keys: no key left out between two of them.
+            breaks = [k for k in range(1, len(pitches)) if pitches[k][0] - pitches[k - 1][0] > 2]
+            for a, b in zip([0, *breaks], [*breaks, len(pitches)], strict=True):
+                run = [i for _, i in pitches[a:b]]
+                # A glissando also strikes many neighbouring keys in a moment, but one after the other.
+                if len(run) >= OVERLAY_BARS and not _in_order([bars[i].start for i in run]):
+                    dropped.update(run)
+    return [bar for i, bar in enumerate(bars) if i not in dropped], len(dropped)
+
+
 KEYS_AGREE = 0.5  # share of bars whose key must be seen lit for the keys to count as lighting up
 
 
@@ -524,8 +574,8 @@ def read_video(
     view = find_keyboard(samples)
     keyboard = view.keyboard
     zones = build_zones(keyboard)
-    layout = plan_layout(keyboard, info.fps)
     floor = backdrop_floor(samples, view)
+    layout = plan_layout(keyboard, info.fps, film=floor is not None)
     readings = read_all_frames(
         video, info, settings, samples, view, zones, layout, lambda f, m: report(0.05 + 0.75 * f, m), floor=floor
     )
@@ -534,7 +584,9 @@ def read_video(
     fastest = max(speed, float(np.percentile(seen_moving, 99.5)) if len(seen_moving) else 0.0)
     if fastest > layout.band_rows - 1:
         # The notes fall further in a frame than the strip is tall: rows would slip between frames. Read again, taller.
-        layout = plan_layout(keyboard, info.fps, band_rows=int(np.ceil(max(2 * speed, fastest + 2))) + 2)
+        layout = plan_layout(
+            keyboard, info.fps, band_rows=int(np.ceil(max(2 * speed, fastest + 2))) + 2, film=floor is not None
+        )
         readings = read_all_frames(
             video, info, settings, samples, view, zones, layout, lambda f, m: report(0.05 + 0.75 * f, m), floor=floor
         )
@@ -544,7 +596,9 @@ def read_video(
     shown, even, steady = scroll_positions(readings, speed, info.fps)
     roll = unroll_readings(readings, shown, even, layout)
     least_rows = max(3, int(round(0.02 * info.fps * speed)))  # nothing shorter than a fiftieth of a second
-    bars = read_bars(roll, zones, keyboard, least_rows=least_rows)
+    bars, overlays = drop_overlays(
+        read_bars(roll, zones, keyboard, least_rows=least_rows), keyboard, tolerance=3.0 * speed
+    )
     if not bars:
         raise JobError(
             "no_notes_found",
@@ -663,6 +717,7 @@ def read_video(
             "separated_by_corners": sum(bar.joined for bar in bars),
             "between_two_sounding_keys": sum(bar.doubtful for bar in bars),
             "from_lit_keys_only": recovered,
+            "overlay_bars_dropped": overlays,
         },
         "key_check": {
             "keys_light": check.keys_light,

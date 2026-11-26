@@ -118,6 +118,15 @@ keys:
   rather than hue, so they are split at middle C.
 - Notes outside E major: 20 of 2251, half of them in the last seconds.
 
+Reading the third video at first changed how every video is read, and the first two then read
+worse: the strip higher above the keyboard and a looser test for the keyboard's rows cost the
+first video three notes (repeated B4s whose seams went unseen) and gave the second its title
+banner as 30 notes at once and its notes 87 ms early (the audio's timing no longer sharp enough
+to apply). Both changes now apply only where they are needed (a film behind the notes; no drawn
+keyboard found), banners are dropped wherever they are read, and the first two videos read as
+before: every note with the same key and hand, starts and ends within 4 ms (first) and 16 ms
+(second) of the earlier reading.
+
 ## Score references
 
 A reference is a JSON file transcribed by hand from a printed score:

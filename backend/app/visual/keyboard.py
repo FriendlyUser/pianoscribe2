@@ -31,9 +31,13 @@ from app.errors import JobError
 BRIGHT = 170  # grey level above which a pixel is a white key front
 DARK = 75  # grey level below which a pixel is a black key
 # Share of a row of the keyboard that is clearly one of its two tones. A drawn keyboard is all
-# but entirely bright or dark; a filmed one has shading on its white keys, reflections on its
-# black keys and the player's hands over both, which leave about a fifth of a row in between.
-TWO_TONE = 0.72
+# but entirely bright or dark (DRAWN: rows across the black keys, rows of white key fronts); a
+# filmed one has shading on its white keys, reflections on its black keys and the player's hands
+# over both, which leave about a fifth of a row in between (FILMED). A drawn keyboard is looked
+# for first: the looser level also moves where a drawn keyboard's rows end, and with them, by a
+# fraction of a pixel, where its keys' sides are measured to be.
+DRAWN = (0.82, 0.8)
+FILMED = (0.72, 0.72)
 HIDDEN_CHROMA = 40  # spread between the strongest and weakest channel above which a pixel is not a key (skin)
 WHITE_SEMITONES = (0, 2, 4, 5, 7, 9, 11)  # C D E F G A B
 # Whether a black key sits on the boundary to the right of each white key, C to B.
@@ -102,8 +106,13 @@ def _runs(mask: NDArray[np.bool_]) -> list[tuple[int, int]]:
     return [(int(a), int(b)) for a, b in zip(edges[::2], edges[1::2], strict=True)]
 
 
-def keyboard_rows(gray: Gray) -> tuple[int, int, int] | None:
-    """(top, black_bottom, bottom) rows of the keyboard in one frame, or None if it shows none."""
+def keyboard_rows(gray: Gray, tones: tuple[float, float] = DRAWN) -> tuple[int, int, int] | None:
+    """(top, black_bottom, bottom) rows of the keyboard in one frame, or None if it shows none.
+
+    ``tones``: the share of a row that must be clearly bright or dark, across the black keys and
+    across the white key fronts (DRAWN or FILMED).
+    """
+    across_black, across_white = tones
     height, width = gray.shape
     bright = gray > BRIGHT
     dark = gray < DARK
@@ -111,7 +120,7 @@ def keyboard_rows(gray: Gray) -> tuple[int, int, int] | None:
     dark_share = dark.mean(axis=1)
     changes = (bright[:, 1:] != bright[:, :-1]).sum(axis=1)
     black_band = (
-        (bright_share > 0.3) & (bright_share < 0.8) & (dark_share > 0.2) & (bright_share + dark_share > TWO_TONE)
+        (bright_share > 0.3) & (bright_share < 0.8) & (dark_share > 0.2) & (bright_share + dark_share > across_black)
     ) & (changes >= 24)
     runs = [run for run in _runs(black_band) if run[1] - run[0] >= max(8, 0.04 * height)]
     if not runs:
@@ -121,7 +130,7 @@ def keyboard_rows(gray: Gray) -> tuple[int, int, int] | None:
     for start, stop in _runs(black_band):
         if 0 < start - end <= max(3, 0.2 * (end - top)):
             end = stop
-    white_band = bright_share > TWO_TONE
+    white_band = bright_share > across_white
     below = [run for run in _runs(white_band) if 0 <= run[0] - end <= max(4, 0.01 * height)]
     if not below:
         return None
@@ -290,9 +299,13 @@ class KeyboardView:
 def find_keyboard(frames: NDArray[np.uint8]) -> KeyboardView:
     """The keyboard shown in most of ``frames`` ([n, rows, columns, 3])."""
     gray = to_gray(frames)
-    found = [keyboard_rows(frame) for frame in gray]
-    seen = [rows for rows in found if rows is not None]
-    if len(seen) < max(3, 0.2 * len(frames)):
+    enough = max(3, 0.2 * len(frames))
+    for tones in (DRAWN, FILMED):
+        found = [keyboard_rows(frame, tones) for frame in gray]
+        seen = [rows for rows in found if rows is not None]
+        if len(seen) >= enough:
+            break
+    if len(seen) < enough:
         raise JobError(
             "keyboard_not_found",
             "No piano keyboard could be found in this video. The piano-video option needs a tutorial video with "
