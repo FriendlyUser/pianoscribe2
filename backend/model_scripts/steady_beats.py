@@ -38,6 +38,7 @@ LEAST_STRETCH_BEATS = 6.0
 # How plain each twelfth of the beat is as a place for a note: the beat, its half, its quarters and thirds, the rest.
 _PLAIN = (0, 3, 3, 2, 2, 3, 1, 3, 2, 2, 3, 3)
 _WRITABLE = (0, 2, 3, 4, 6, 8, 9, 10)  # twelfths of the beat a note can be written on
+COARSE_MOMENT = 0.04  # seconds within which the notes of a coarsely read video are struck together
 
 
 @dataclass
@@ -183,13 +184,24 @@ def find_stretches(beats: list[float], times: np.ndarray) -> list[Stretch]:
             origin, period, scatter, _ = _fit(times[first : last + 1], origin, period)
             on = _on_grid(times, origin, period, scatter)
             first, last = _extent(on, first, last, low, high)
-        kept = int(on[first : last + 1].sum())
-        if (
-            kept < LEAST_ONSETS
-            or kept < 0.8 * (last - first + 1)
-            or times[last] - times[first] < LEAST_STRETCH_BEATS * period
-        ):
+        # The notes of one chord, struck a hundredth of a second apart by a player's hand, count once:
+        # a few chords far apart sit on many a grid, each note of them at once, and keep no tempo.
+        struck = np.concatenate(([True], np.diff(times[first : last + 1]) > COARSE_MOMENT))
+        chord = np.cumsum(struck) - 1
+        on_chord = np.zeros(int(chord[-1]) + 1, dtype=bool)
+        np.logical_or.at(on_chord, chord, on[first : last + 1])
+        kept = int(on_chord.sum())
+        span = times[last] - times[first]
+        if kept < LEAST_ONSETS or kept < 0.8 * len(on_chord) or span < LEAST_STRETCH_BEATS * period:
             continue
+        # Notes few and far between (fewer than one to the beat) keep a beat only by falling on it:
+        # on the beat and its half, four in five of them, and on two beats in five at the least.
+        if len(on_chord) < span / period:
+            quarters = np.round((times[first : last + 1][struck] - origin) / (period / STEPS)).astype(np.int64) % STEPS
+            halves = np.bincount(quarters % (STEPS // 2), minlength=STEPS // 2)
+            if halves.max() < 0.8 * len(on_chord) or len(on_chord) < 0.4 * span / period:
+                continue
+        kept = int(on[first : last + 1].sum())
         found.append((first, last, Stretch(origin, period, float(times[first]), float(times[last]), scatter, kept)))
     return [stretch for _, _, stretch in sorted(found, key=lambda item: item[0])]
 
@@ -204,7 +216,91 @@ def _phase(stretch: Stretch, tracked: np.ndarray) -> None:
     stretch.origin += quarter * stretch.period / STEPS
 
 
-COARSE_MOMENT = 0.04  # seconds within which the notes of a coarsely read video are struck together
+RUNS_ON = 2.0  # beats between two stretches under which the notes run on from one into the other
+SPLIT = 0.25  # share of the tracked beats on another quarter above which the tracker has changed its mind
+
+
+def _in_step(a: Stretch, b: Stretch) -> int | None:
+    """How many quarters of the beat the grid of ``b`` is numbered ahead of the grid of ``a``, where the
+    notes run on from ``a`` into ``b`` on one grid; None where they do not (a pause, a free bar)."""
+    if b.start - a.end > RUNS_ON * max(a.period, b.period):
+        return None
+    step = min(a.period, b.period) / STEPS
+    reach = min(max(3.0 * (a.scatter + b.scatter), 0.008), 0.3 * step)
+    if min(a.scatter, b.scatter) > PRECISE and abs(a.period / b.period - 1.0) <= 0.015:
+        reach = 0.45 * step  # one tempo, read coarsely (see ``_join``)
+    middle = (a.end + b.start) / 2.0
+    in_a = int(np.round((middle - a.origin) / (a.period / STEPS)))
+    line = a.origin + in_a * a.period / STEPS
+    in_b = int(np.round((line - b.origin) / (b.period / STEPS)))
+    if abs(line - (b.origin + in_b * b.period / STEPS)) > reach:
+        return None
+    return (in_b - in_a) % STEPS
+
+
+def _votes(stretch: Stretch, tracked: np.ndarray) -> np.ndarray:
+    """How many of the tracked beats within the stretch fall on each quarter of its grid."""
+    near = tracked[
+        (tracked >= stretch.start - 0.25 * stretch.period) & (tracked <= stretch.end + 0.25 * stretch.period)
+    ]
+    quarters = np.round((near - stretch.origin) / (stretch.period / STEPS)).astype(np.int64) % STEPS
+    return np.bincount(quarters, minlength=STEPS).astype(np.float64)
+
+
+# Share of the tracked beats within a stretch that must agree on the beat, or on it and its off-beat.
+DECIDED = 0.8
+
+
+def set_phases(stretches: list[Stretch], tracked: np.ndarray) -> int:
+    """Move every stretch's origin onto the quarter of its grid that is the beat; returns how many stretches
+    were given another beat than most of the tracked beats within them mark.
+
+    The tracked beats say which quarter that is, stretch by stretch. But the tracker can take
+    the off-beat for the beat through a whole passage (a figure whose lowest notes fall between
+    the beats) and right itself later, while the notes run on evenly: in the score, half a beat
+    would go missing where it does. Notes that run on from one stretch into the next keep one
+    beat between them. So stretches that run on, each sure of its beat but for the choice
+    between it and its off-beat, decide together, by all the tracked beats within them; and
+    where the tracker has plainly changed its mind along the way, the passage is taken to
+    begin on a beat, as music does far more often than not, if one of its two answers says so.
+    """
+    own = [_votes(stretch, tracked) for stretch in stretches]
+    said = [int(np.argmax(votes)) for votes in own]
+    groups: list[list[tuple[int, int]]] = []  # (stretch, how far its numbering is ahead of its group's first)
+    for index, stretch in enumerate(stretches):
+        pair = own[index][said[index]] + own[index][(said[index] + STEPS // 2) % STEPS]
+        if own[index].sum() == 0 or pair < DECIDED * own[index].sum():
+            _phase(stretch, tracked)  # the tracked beats within it are all over the grid: on its own, as they lean
+            continue
+        ahead = None
+        if groups and groups[-1][-1][0] == index - 1:
+            before, so_far = groups[-1][-1]
+            step = _in_step(stretches[before], stretch)
+            first = groups[-1][0][0]
+            if step is not None and (said[index] - (so_far + step) - said[first]) % STEPS in (0, STEPS // 2):
+                ahead = (so_far + step) % STEPS
+        if ahead is None:
+            groups.append([(index, 0)])
+        else:
+            groups[-1].append((index, ahead))
+    changed = 0
+    for group in groups:
+        total = np.zeros(STEPS)
+        for index, ahead in group:
+            total += np.roll(own[index], -ahead)
+        ranked = np.argsort(-total, kind="stable")
+        beat = int(ranked[0])
+        first = stretches[group[0][0]]
+        begins_on = int(np.round((first.start - first.origin) / (first.period / STEPS))) % STEPS
+        if total[ranked[1]] >= SPLIT * total.sum() and int(ranked[1]) == begins_on:
+            beat = begins_on
+        for index, ahead in group:
+            quarter = (beat + ahead) % STEPS
+            changed += quarter != said[index]
+            stretches[index].origin += quarter * stretches[index].period / STEPS
+    return changed
+
+
 PRECISE = (
     0.005  # scatter (seconds) under which a stretch is read finely enough to tell a third from a quarter of the beat
 )
@@ -244,6 +340,7 @@ class Steady:
     regular_bars: int = 0  # bar lines placed by counting beats
     tracked_bars: int = 0  # bar lines left where the tracker heard them
     within: float = 0.012  # seconds within which onsets are one moment (see ``moments``)
+    rephased: int = 0  # stretches whose beat is another quarter of their grid than the tracked beats within them mark
 
 
 def _join(a: Stretch, b: Stretch, times: np.ndarray) -> tuple[str, tuple[int, ...]]:
@@ -374,8 +471,7 @@ def steady_beats(annotation: dict, onsets: list[float]) -> Steady:
         return Steady(
             beats, [False] * len(beats), [float("inf")] * len(beats), tracked_bars, [], 0, len(tracked_bars), within
         )
-    for stretch in stretches:
-        _phase(stretch, tracked)
+    rephased = set_phases(stretches, tracked)
     first = [int(np.floor(s.index(s.start) + 1e-3)) for s in stretches]
     last = [int(np.ceil(s.index(s.end) - 1e-3)) for s in stretches]
     joins = [_join(a, b, times) for a, b in zip(stretches, stretches[1:], strict=False)]
@@ -419,7 +515,13 @@ def steady_beats(annotation: dict, onsets: list[float]) -> Steady:
         ) < 0.8 * len(inside):
             return None
         at = [int(np.argmin(np.abs(np.asarray(lines) - float(b["start"])))) for b in inside]
-        return list(zip(at, _smooth_phases([i % count for i in at], count), strict=True))
+        # A bar line tracked about halfway between two beats (the tracker had the off-beat for the
+        # beat there) says nothing about which of the two begins the bar.
+        beat = float(np.median(np.diff(lines)))
+        clear = [i for i, b in zip(at, inside, strict=True) if abs(lines[i] - float(b["start"])) <= 0.3 * beat]
+        if len(clear) < 2:
+            return None
+        return list(zip(clear, _smooth_phases([i % count for i in clear], count), strict=True))
 
     out = [float(t) for t in tracked if t < pieces[0][0] - 0.5 * stretches[0].period]
     fitted = [False] * len(out)
@@ -455,6 +557,17 @@ def steady_beats(annotation: dict, onsets: list[float]) -> Steady:
         a, b = stretches[chain[-1]], stretches[chains[number + 1][0]]
         following = [t for i in chains[number + 1] for t in pieces[i]]
         after = phases(following) if len(following) >= 2 else None
+        # Two fits of one beat, a little apart where a player's tempo drifts: the beat this chain ends on
+        # may be the one the next begins on. It is the next chain's.
+        while len(out) > 1 and out[-1] > following[0] - 0.5 * min(a.period, b.period):
+            gone = out.pop()
+            fitted.pop()
+            scatter.pop()
+            kept = [bar for bar in bars if float(bar["start"]) != gone]
+            regular -= len(bars) - len(kept)
+            bars = kept
+            if place_of_last is not None:
+                place_of_last = (place_of_last - 1) % count
         low, high = out[-1], following[0]
         heard = [float(t) for t in tracked if low + 0.5 * a.period < t < high - 0.5 * b.period]
         placed: list[float] | None = None
@@ -464,6 +577,12 @@ def steady_beats(annotation: dict, onsets: list[float]) -> Steady:
             candidates = sorted({wanted + count * n for n in range(0, 4)}, key=lambda n: abs(n - len(heard)))
             gap = times[(times > low + 1e-3) & (times < high - 1e-3)]
             placed = _on_onsets(low, high, candidates[0], gap, a.period)
+            if placed is None and len(gap) < candidates[0]:
+                # Fewer notes than beats: a chord held through a pause. Its beats are not on notes, only
+                # counted, as many as keep the bars in step, and as long as the pause makes them.
+                length = (high - low) / (candidates[0] + 1)
+                if 0.6 * min(a.period, b.period) <= length <= 1.8 * max(a.period, b.period):
+                    placed = [low + length * n for n in range(1, candidates[0] + 1)]
         if placed is None:
             placed = heard
             bars += [b for b in tracked_bars if low < float(b["start"]) < high - 0.25 * _tracked_beat(b, starts)]
@@ -494,7 +613,7 @@ def steady_beats(annotation: dict, onsets: list[float]) -> Steady:
         }
         for i, (s, piece) in enumerate(zip(stretches, pieces, strict=True))
     ]
-    return Steady(out, fitted, scatter, bars, described, regular, len(bars) - regular, within)
+    return Steady(out, fitted, scatter, bars, described, regular, len(bars) - regular, within, rephased)
 
 
 def _tracked_beat(bar: dict, starts: np.ndarray) -> float:

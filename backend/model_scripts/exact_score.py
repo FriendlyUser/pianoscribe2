@@ -337,8 +337,13 @@ def _may_end(tick: int, triple_beats: set[int]) -> bool:
     return tick % 2 == 0 if tick // TICKS in triple_beats else tick % 3 == 0
 
 
-def settle_lengths(voice: list[Chord], triple_beats: set[int], fine: set[int] | None = None) -> None:
-    """Give each chord of a voice its written length.
+RING = 2 * TICKS  # ticks to the next note of its voice within which a note the pedal holds is written out to it
+
+
+def settle_lengths(
+    voice: list[Chord], triple_beats: set[int], fine: set[int] | None = None, *, let_ring: bool = False
+) -> int:
+    """Give each chord of a voice its written length; returns how many were let ring (see ``let_ring``).
 
     ``fine``: the beats read finely (a video drawn from a score, read to a few milliseconds).
     There a bar's length is the note value itself, but for the sliver cut off a note that is
@@ -350,18 +355,40 @@ def settle_lengths(voice: list[Chord], triple_beats: set[int], fine: set[int] | 
     released some way before the next note. A chord runs to the next of its voice when the gap
     is no more than a sixteenth or it fills most of the space; otherwise it gets the plainest
     note value it could be a shortened form of, and a rest follows.
+
+    ``let_ring``: the notes of this performance go on sounding after their keys are released
+    (the pedal holds them), so how long a key was down is not how long its note lasts, however
+    finely it is read. A chord then runs to the next of its voice when that comes within two
+    beats (or as a player's would above), and otherwise ends on a beat: the one nearest the
+    release of its keys, the first after it began at the least. Written out, that is, not as
+    a short note and a rest, and not tied over by a sliver.
     """
+    rung = 0
     for chord, following in zip(voice, [*voice[1:], None], strict=True):
         limits = [t for t in (following.start if following is not None else None, chord.cap) if t is not None]
         limit = min(limits) if limits else None
         held = max(1, chord.end - chord.start)
-        exact = fine is not None and chord.start // TICKS in fine
+        # Lengths are exact where the video is read finely, unless the pedal holds the notes: then how
+        # long a key was down is a player's doing here too, however exactly it is read.
+        exact = fine is not None and chord.start // TICKS in fine and not let_ring
+        ring = let_ring
         if limit is not None:
             gap = limit - chord.end
             space = limit - chord.start
             if (gap <= 2 or held >= 0.88 * space) if exact else (gap <= 4 or held >= 0.55 * space):
                 chord.end = limit
                 continue
+            if ring and space <= RING:
+                chord.end = limit
+                rung += 1
+                continue
+        if ring:
+            beat = (chord.start // TICKS + 1) * TICKS  # the first beat after it began
+            end = max(beat, round(chord.end / TICKS) * TICKS)
+            end = end if limit is None else min(end, limit)
+            rung += end > chord.end + 2
+            chord.end = end
+            continue
         whole = round(held / TICKS) * TICKS
         if not limits and whole >= TICKS and abs(held - whole) <= 3:
             # The last note of its hand, let ring a little past the beat or released a little before it.
@@ -405,6 +432,7 @@ def settle_lengths(voice: list[Chord], triple_beats: set[int], fine: set[int] | 
             while not _may_end(best, triple_beats) and (limit is None or best < limit):
                 best += 1
         chord.end = max(best, chord.start + 1)
+    return rung
 
 
 HAND_SPAN = 16  # semitones one hand can strike together at the very most (a major tenth)
@@ -588,11 +616,15 @@ class Plan:
     cut_short: int = 0  # chords cut where another began, for want of a third voice
     steady: Steady | None = None  # the beat the notes keep, where they keep one
     shared: int = 0  # notes written on the other hand's staff, their chord being too wide for one hand
+    rung: int = 0  # chords written out beyond the release of their keys, the pedal holding them
     voices: dict[int, int] = field(default_factory=dict)  # staff -> voices used
 
 
-def plan_score(notes: list[dict], annotation: dict) -> Plan:
-    """Lay ``notes`` (``start``, ``end`` in seconds, ``pitch``, ``hand``) out on the tracker's beats and bars."""
+def plan_score(notes: list[dict], annotation: dict, *, let_ring: bool = False) -> Plan:
+    """Lay ``notes`` (``start``, ``end`` in seconds, ``pitch``, ``hand``) out on the tracker's beats and bars.
+
+    ``let_ring``: the notes ring on after their keys are released (see ``settle_lengths``).
+    """
     onsets = [float(n["start"]) for n in notes]
     steady = steady_beats(annotation, onsets)
     annotation = {**annotation, "beats": steady.beats, "bars": steady.bars}
@@ -649,10 +681,11 @@ def plan_score(notes: list[dict], annotation: dict) -> Plan:
     for staff, members in ticked.items():
         chords = group_chords(members)
         held = {id(c): c.end for c in chords}
-        voices = plan_voices(chords, played=not finely)
+        # Under the pedal a key held into the next note is a player's legato, however finely it is read.
+        voices = plan_voices(chords, played=not finely or let_ring)
         plan.cut_short += sum(c.end < held[id(c)] - 2 for c in chords)
         for voice in voices:
-            settle_lengths(voice, triple[staff], fine)
+            plan.rung += settle_lengths(voice, triple[staff], fine, let_ring=let_ring)
         chords_by_staff[staff] = voices
         plan.voices[staff] = len(voices)
         last = max([last, *[c.end for v in voices for c in v]])

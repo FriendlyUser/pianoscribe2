@@ -12,6 +12,11 @@ independent ways before handing it on:
 * **The audio.** The notes are laid over the spectrum of the recording to fix the
   octave when the keyboard shown is not a full one, and timed against its attacks.
 
+A video whose keys are too small for that, or whose keyboard is filmed, is read from one
+picture of its whole roll instead (``app.visual.stacked``); its notes are checked against
+the audio alone, since a filmed key does not light, and where it draws both hands in one
+colour the hands are told apart by where the player's own hands are.
+
 Nothing here is a model: the notes are measured, not estimated, and the measurements
 that came out are reported with the notes (``VisualReading.facts``).
 """
@@ -20,7 +25,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -30,8 +35,9 @@ from app.config import Settings
 from app.errors import JobError
 from app.logging import get_logger
 from app.visual import audio as sound
+from app.visual import stacked
 from app.visual.frames import VideoInfo, probe_video, read_strips, sample_frames
-from app.visual.hands import LEFT, RIGHT, UNKNOWN, assign_hands, split_by_pitch
+from app.visual.hands import LEFT, RIGHT, UNKNOWN, assign_hands, divide_hands, hands_by_divide, split_by_pitch
 from app.visual.keyboard import Keyboard, KeyboardView, find_keyboard
 from app.visual.roll import (
     DEEP_NOTCH,
@@ -57,6 +63,10 @@ KEY_ROWS = 4
 SPEED_ROWS = 2
 PIANO_LOWEST, PIANO_HIGHEST = 21, 108
 Progress = Callable[[float, str], None]
+
+
+def _even(value: float) -> int:
+    return max(2, int(round(value / 2.0)) * 2)
 
 
 def pitch_name(pitch: int) -> str:
@@ -657,6 +667,247 @@ def check_against_keys(bars: list[Bar], roll: Roll, readings: Readings) -> KeyCh
     return KeyCheck(shift, len(differences), confirmed, unexplained, keys_light=True)
 
 
+TWO_HANDS = 0.3  # share of the frames in which skin shows on both sides of the divide for the hands to be read
+
+
+def _colour_of(pile: stacked.Stack, lane: stacked.Lane, block: stacked.Block) -> tuple[float, float, float]:
+    """The mean colour of a block: the middle half of its lane, clear of its ends."""
+    rows = len(pile.colour)
+    first, last = int(np.ceil(block.start)) + 1, int(np.floor(block.end)) - 1
+    if last <= first:
+        first, last = int(np.floor(block.start)), int(np.ceil(block.end)) + 1
+    first, last = max(0, min(first, rows - 1)), max(1, min(last, rows))
+    quarter = (lane.x1 - lane.x0) / 4.0
+    a = max(0, int(np.floor(lane.x0 + quarter)))
+    b = min(pile.colour.shape[1], max(a + 1, int(np.ceil(lane.x1 - quarter))))
+    mean = pile.colour[first:last, a:b].reshape(-1, 3).astype(np.float64).mean(axis=0)
+    return float(mean[0]), float(mean[1]), float(mean[2])
+
+
+def _read_stacked(
+    video: Path,
+    settings: Settings,
+    info: VideoInfo,
+    samples: NDArray[np.uint8],
+    view: KeyboardView,
+    audio: tuple[NDArray[np.float32], int] | None,
+    report: Progress,
+) -> VisualReading:
+    """Read a video with small keys or a filmed keyboard from one picture of its whole roll."""
+    keyboard = view.keyboard
+    light = stacked.block_light(samples, view)
+    watched = stacked.watch(video, info, settings, samples, view, light, lambda f, m: report(0.05 + 0.2 * f, m))
+    speed = stacked.measure_speed(watched, info, keyboard.top)
+    pile = stacked.stack(video, info, settings, view, light, watched, speed, lambda f, m: report(0.25 + 0.55 * f, m))
+    del samples
+    report(0.82, "Measuring the notes")
+    lanes = stacked.find_lanes(pile.picture, pile.level, view)
+    presence = stacked.read_rows(pile.picture, pile.level, lanes)
+    least_rows = max(
+        3, int(round(0.02 * info.fps * pile.rows_per_frame))
+    )  # nothing shorter than a fiftieth of a second
+    blocks, faint, slivers = stacked.read_blocks(presence, lanes, least_rows=least_rows)
+    if not blocks:
+        raise JobError(
+            "no_notes_found",
+            "The keyboard was found, but no falling notes. The piano-video option reads blocks that fall onto "
+            "the keys.",
+        )
+
+    def seconds_of(row: float) -> float:
+        return float(pile.frame_of(row)) / info.fps
+
+    octave: dict[str, object] = {"source": "full keyboard" if keyboard.octave_certain else "middle of the keyboard"}
+    offset_fact: dict[str, object] = {}
+    shift_seconds = 0.0
+    transpose = 0
+    heard: dict[str, object] = {}
+    cut_at_faint = 0
+    if audio is not None:
+        samples_audio, rate = audio
+        report(0.9, "Checking the notes against the audio")
+        onsets = [seconds_of(block.start) for block in blocks]
+        measured = sound.audio_offset(onsets, samples_audio, rate)
+        if measured is not None:
+            offset_fact = {"seconds": round(measured.seconds, 4), "sharpness": round(measured.sharpness, 1)}
+            if measured.reliable:
+                shift_seconds = measured.seconds
+                offset_fact["applied"] = True
+                attacks = np.array(sound.attack_times(samples_audio, rate))
+                struck = np.array(sorted(onsets)) + shift_seconds
+                # A faint pinch is where a note begins when the audio has an attack there that no note accounts for.
+                spare = np.array([t for t in attacks if np.abs(struck - t).min() > HEARD])
+                for number, row, _ in sorted(faint, key=lambda item: -item[1]):
+                    if len(spare) and np.abs(spare - (seconds_of(row) + shift_seconds)).min() <= HEARD:
+                        whole = blocks[number]
+                        blocks[number] = stacked.Block(whole.lane, whole.start, float(row), whole.joined, False)
+                        blocks.append(stacked.Block(whole.lane, float(row), whole.end, True, whole.cut_short))
+                        cut_at_faint += 1
+                struck = np.array(sorted(seconds_of(block.start) for block in blocks)) + shift_seconds
+                near = np.array([np.abs(struck - t).min() for t in attacks]) if len(attacks) else np.zeros(0)
+                heard = {
+                    "attacks": len(attacks),
+                    "attacks_with_a_note": int((near <= HEARD).sum()),
+                    "attacks_without_a_note": int((near > HEARD).sum()),
+                }
+        if not keyboard.octave_certain:
+            scores = sound.octave_scores(
+                [
+                    (seconds_of(b.start) + shift_seconds, seconds_of(b.end) + shift_seconds, lanes.lanes[b.lane].pitch)
+                    for b in blocks
+                ],
+                samples_audio,
+                rate,
+            )
+            octave["agreement"] = {str(k): round(v, 4) for k, v in scores.items()}
+            best = sound.best_octave(scores)
+            if best is not None:
+                octave["source"] = "audio"
+                low = min(lanes.lanes[b.lane].pitch for b in blocks)
+                high = max(lanes.lanes[b.lane].pitch for b in blocks)
+                if best != 0 and low + best >= PIANO_LOWEST and high + best <= PIANO_HIGHEST:
+                    transpose = best
+    octave["shift"] = transpose
+    if audio is not None:
+        rings = sound.rings_on(
+            [
+                (seconds_of(b.start) + shift_seconds, seconds_of(b.end) + shift_seconds, lanes.lanes[b.lane].pitch)
+                for b in blocks
+            ],
+            audio[0],
+            audio[1],
+        )
+        if rings is not None:
+            heard["rings_on"] = round(rings, 3)
+
+    blocks.sort(key=lambda block: (block.start, block.lane))
+    pitches = [lanes.lanes[block.lane].pitch for block in blocks]
+    black = [lanes.lanes[block.lane].black for block in blocks]
+    hands = assign_hands([_colour_of(pile, lanes.lanes[block.lane], block) for block in blocks], pitches, black)
+    hands_from = "colours"
+    hands_seen = 0.0
+    if all(hand == UNKNOWN for hand in hands):
+        # One colour for both hands. A filmed keyboard shows the hands themselves.
+        skin_rows = max(1, int(watched.skin.max()))
+        divide = divide_hands(watched.skin, skin_rows)
+        columns = np.arange(watched.skin.shape[1])[None, :]
+        skin = watched.skin >= max(2, 0.1 * skin_rows)
+        both = (skin & (columns < divide[:, None])).any(axis=1) & (skin & (columns >= divide[:, None])).any(axis=1)
+        hands_seen = float(both[watched.present].mean()) if watched.present.any() else 0.0
+        if hands_seen >= TWO_HANDS:
+            filmed = {key.pitch: key.center for key in keyboard.keys}
+            where = [filmed.get(p, lanes.lanes[b.lane].center) for p, b in zip(pitches, blocks, strict=True)]
+            # The hands are filmed with the sound: a key goes down when its note is heard.
+            when = [(seconds_of(block.start) + shift_seconds) * info.fps for block in blocks]
+            hands = hands_by_divide(where, when, divide)
+            hands_from = "hands"
+        else:
+            hands = split_by_pitch(pitches)
+            hands_from = "pitch"
+
+    notes = []
+    for block, pitch, hand in zip(blocks, pitches, hands, strict=True):
+        start = max(0.0, seconds_of(block.start) + shift_seconds)
+        length = max(seconds_of(block.end) - seconds_of(block.start), 0.02)
+        notes.append(
+            VisualNote(start=round(start, 4), end=round(start + length, 4), pitch=pitch + transpose, hand=hand)
+        )
+    notes.sort(key=lambda note: (note.start, note.pitch))
+    by_hand = {name: sum(note.hand == name for note in notes) for name in (RIGHT, LEFT, UNKNOWN)}
+    present = watched.present
+    shown = np.flatnonzero(present)
+    lit = float((pile.picture >= stacked.THERE * pile.level).sum())
+    facts: dict[str, object] = {
+        "video": {
+            "width": info.source_width,
+            "height": info.source_height,
+            "read_at": [info.width, info.height],
+            "fps": info.fps,
+        },
+        "keyboard": {
+            "keys": len(lanes.lanes),
+            "lowest": pitch_name(lanes.lanes[0].pitch + transpose),
+            "highest": pitch_name(lanes.lanes[-1].pitch + transpose),
+            "white_key_width": round(keyboard.white_width, 2),
+            "top_row": keyboard.top,
+            "filmed": view.filmed,
+        },
+        "octave": octave,
+        "roll": {
+            "read_from": "one picture of the whole roll",
+            "first_second": round(float(shown[0]) / info.fps, 3) if len(shown) else 0.0,
+            "last_second": round(float(shown[-1]) / info.fps, 3) if len(shown) else 0.0,
+            "rows_per_second": round(pile.speed * info.fps, 2),
+            "steady": True,
+            "seconds_on_screen": round(keyboard.top / (pile.speed * info.fps), 2),
+            "film_behind": False,
+            "bar_brightness": round(pile.level, 1),
+            "keyboard_shown": round(float(present.mean()), 4),
+            "block_channels": [("red", "green", "blue")[c] for c in light.channels] or ["strongest"],
+            "bands_apart_before_alignment": pile.bands_late,
+        },
+        "lanes": {
+            "white_step": round(lanes.white_step, 3),
+            "white_block_width": round(lanes.white_width, 2),
+            "black_block_width": round(lanes.black_width, 2),
+            "white_lanes_measured": lanes.seen_white,
+            "black_lanes_measured": lanes.seen_black,
+            "furthest_from_filmed_key": lanes.off_keys,
+        },
+        "notes": {
+            "total": len(notes),
+            "right_hand": by_hand[RIGHT],
+            "left_hand": by_hand[LEFT],
+            "hand_unknown": by_hand[UNKNOWN],
+            "hands_from": hands_from,
+            "two_hands_seen": round(hands_seen, 3),
+            "separated_by_corners": sum(block.joined for block in blocks),
+            "between_two_sounding_keys": sum(block.cut_short for block in blocks),
+            # A black key between two white keys that both sound is under their blocks: for this long, in all,
+            # the picture could not have shown one.
+            "seconds_a_black_key_was_out_of_sight": round(
+                float(presence.hidden.sum()) / (pile.rows_per_frame * info.fps), 3
+            ),
+            "from_lit_keys_only": 0,
+            "overlay_bars_dropped": 0,
+            "slivers_joined": 0,
+            "runs_too_short": slivers,
+            "separated_at_faint_seams": {"heard": cut_at_faint, "left_whole": len(faint) - cut_at_faint},
+            "let_ring": _let_ring(heard),
+        },
+        "picture_check": {
+            "lit_columns": int(lit),
+            "lit_without_a_key": int(presence.unexplained.sum()),
+            "key_on_but_dark": int(presence.missing.sum()),
+            "most_rows_in_a_row_unexplained": _longest_run((presence.unexplained > 2) | (presence.missing > 2)),
+        },
+        "key_check": {
+            "keys_light": False,
+            "bars_confirmed": 0,
+            "bars": len(blocks),
+            "lit_without_a_bar": 0,
+            "timing_shift_frames": 0.0,
+            "onsets_timed": 0,
+        },
+        "audio_offset": offset_fact,
+        "audio_check": heard,
+    }
+    log.info(
+        "visual.read", **{k: v for k, v in facts.items() if k in ("notes", "lanes", "picture_check", "octave", "roll")}
+    )
+    return VisualReading(notes, facts)
+
+
+def _longest_run(mask: NDArray[np.bool_]) -> int:
+    return max((b - a for a, b in _runs(mask)), default=0)
+
+
+def _let_ring(heard: dict[str, object]) -> bool:
+    """Whether the notes go on sounding after their keys are released: the pedal holds them (``audio.rings_on``)."""
+    rings = heard.get("rings_on")
+    return isinstance(rings, float) and rings >= sound.RINGS
+
+
 def read_video(
     video: Path,
     settings: Settings,
@@ -675,6 +926,20 @@ def read_video(
     samples = sample_frames(video, info, settings, count=settings.visual_sample_frames)
     view = find_keyboard(samples)
     keyboard = view.keyboard
+    if view.filmed and keyboard.white_width > 1.3 * stacked.STACK_BELOW:
+        # One picture of the whole roll has a row for every pixel the notes fall and a column for every
+        # column of the frame: a large frame makes it larger than there is any use for. Read smaller.
+        scale = 1.2 * stacked.STACK_BELOW / keyboard.white_width
+        smaller = replace(info, width=_even(info.width * scale), height=_even(info.height * scale))
+        samples_smaller = sample_frames(video, smaller, settings, count=settings.visual_sample_frames)
+        try:
+            view_smaller = find_keyboard(samples_smaller)
+        except JobError:
+            view_smaller = None
+        if view_smaller is not None and view_smaller.filmed:
+            info, samples, view, keyboard = smaller, samples_smaller, view_smaller, view_smaller.keyboard
+    if view.filmed or keyboard.white_width < stacked.STACK_BELOW:
+        return _read_stacked(video, settings, info, samples, view, audio, report)
     zones = build_zones(keyboard)
     floor = backdrop_floor(samples, view)
     layout = plan_layout(keyboard, info.fps, film=floor is not None)
@@ -781,6 +1046,15 @@ def read_video(
                 shift_seconds = measured.seconds
                 offset_fact["applied"] = True
     octave["shift"] = transpose
+    heard: dict[str, object] = {}
+    if audio is not None:
+        rings = sound.rings_on(
+            [(s + shift_seconds, e + shift_seconds, p + transpose) for (s, e), p in zip(seconds, pitches, strict=True)],
+            audio[0],
+            audio[1],
+        )
+        if rings is not None:
+            heard["rings_on"] = round(rings, 3)
 
     notes = [
         VisualNote(
@@ -832,6 +1106,7 @@ def read_video(
             "overlay_bars_dropped": overlays,
             "slivers_joined": slivers,
             "separated_at_faint_seams": faint,
+            "let_ring": _let_ring(heard),
         },
         "key_check": {
             "keys_light": check.keys_light,
@@ -842,6 +1117,7 @@ def read_video(
             "onsets_timed": check.onsets_used,
         },
         "audio_offset": offset_fact,
+        "audio_check": heard,
     }
     log.info("visual.read", **{k: v for k, v in facts.items() if k in ("notes", "key_check", "octave", "roll")})
     return VisualReading(notes, facts)

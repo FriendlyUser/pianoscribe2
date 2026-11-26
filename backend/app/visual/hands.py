@@ -104,3 +104,90 @@ def assign_hands(
         nearest = known[np.argmin(np.abs(pitch[known] - pitch[index]))]
         hand[index] = hand[nearest]
     return [str(h) for h in hand]
+
+
+# --- the player's own hands, in a video filmed from above -----------------------------------------
+#
+# A filmed keyboard has the player's hands over it, and a video that draws both hands' notes in
+# one colour still shows which hand plays what. Skin is redder than it is green; keys, shadows
+# and the flashes of light where notes land are not. Counting the skin in each column of the
+# picture, over the lower part of the keys and just below them, gives every frame a profile
+# with one hump per hand, and the notes left of the gap between the humps are the left hand's.
+
+SKIN = 15  # how much redder than green, beyond what the still picture is there, a pixel of skin is
+SKIN_BRIGHT = 50  # ... and how bright its red must be: shadows have no colour to speak of
+
+
+def skin_floor(samples: NDArray[np.uint8]) -> NDArray[np.int16]:
+    """How much redder than green each pixel is with no hand over it: [rows, columns], from sampled frames.
+
+    The lower fifth of what a pixel shows: a hand makes it redder, and rests on few pixels
+    four fifths of the time.
+    """
+    excess = samples[..., 0].astype(np.int16) - samples[..., 1].astype(np.int16)
+    floor: NDArray[np.int16] = np.percentile(excess, 20, axis=0).astype(np.int16)
+    return floor
+
+
+def skin_columns(frames: NDArray[np.uint8], floor: NDArray[np.int16]) -> NDArray[np.uint8]:
+    """How many rows of each column of ``frames`` ([frames, rows, columns, 3]) show skin: [frames, columns]."""
+    red = frames[..., 0].astype(np.int16)
+    skin = (red - frames[..., 1].astype(np.int16) - floor[None] > SKIN) & (red > SKIN_BRIGHT)
+    counted: NDArray[np.uint8] = np.minimum(skin.sum(axis=1), 255).astype(np.uint8)
+    return counted
+
+
+def divide_hands(skin: NDArray[np.uint8], rows: int, *, step: int = 2) -> NDArray[np.float32]:
+    """The column between the two hands in every frame, from ``skin`` ([frames, columns], see ``skin_columns``).
+
+    ``rows``: how many rows were counted, so that a column full of skin counts as one.
+
+    The dividing column is followed through the video as the path that crosses the least skin,
+    keeps skin on both sides of it where two hands show, and moves no more than it must
+    (found over all frames at once, so that it also passes between two hands that touch for a
+    moment, and stays where it was while one hand is out of the picture).
+    """
+    frames, width = skin.shape
+    share = skin.astype(np.float32) / max(1, rows)
+    kernel = np.ones(5, dtype=np.float32) / 5.0
+    padded = np.pad(share, ((0, 0), (2, 2)), mode="edge")
+    smooth = sum(padded[:, k : k + width] * kernel[k] for k in range(5))
+    places = np.arange(0, width, step)
+    total = np.cumsum(share, axis=1)
+    left = total[:, places]
+    right = total[:, -1:] - left
+    both = np.minimum(left, right) / np.maximum(total[:, -1:], 1e-6)  # 0 beside the hands, up to 0.5 between them
+    cost = 4.0 * smooth[:, places] - 2.0 * both  # [frames, places]
+    reach = max(1, int(round(24 / step)))  # columns the divide may move from one frame to the next
+    moves = np.arange(-reach, reach + 1)
+    move_cost = 0.02 * step * np.abs(moves).astype(np.float32)
+    count = len(places)
+    best = cost[0].copy()
+    came = np.zeros((frames, count), dtype=np.int16)
+    index = np.arange(count)
+    for frame in range(1, frames):
+        candidates = np.full((len(moves), count), np.inf, dtype=np.float32)
+        for k, move in enumerate(moves):
+            source = index - move
+            valid = (source >= 0) & (source < count)
+            candidates[k, valid] = best[source[valid]] + move_cost[k]
+        chosen = candidates.argmin(axis=0)
+        came[frame] = moves[chosen]
+        best = candidates[chosen, index] + cost[frame]
+    path = np.zeros(frames, dtype=np.int64)
+    path[-1] = int(np.argmin(best))
+    for frame in range(frames - 1, 0, -1):
+        path[frame - 1] = path[frame] - came[frame, path[frame]]
+    divide: NDArray[np.float32] = (places[path] + step / 2.0).astype(np.float32)
+    return divide
+
+
+def hands_by_divide(columns: Sequence[float], frames: Sequence[float], divide: NDArray[np.float32]) -> list[str]:
+    """``left`` or ``right`` for notes struck at ``columns`` of the keyboard in ``frames``: the side of the divide."""
+    out = []
+    last = len(divide) - 1
+    for column, frame in zip(columns, frames, strict=True):
+        first = int(np.clip(np.floor(frame) - 1, 0, last))
+        around = divide[first : min(last, first + 4) + 1]  # as the key goes down, and the three frames after
+        out.append(LEFT if column < float(np.median(around)) else RIGHT)
+    return out

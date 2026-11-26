@@ -173,3 +173,79 @@ def test_a_chord_too_wide_for_one_hand_is_shared_between_the_staves() -> None:
     # With a melody note far above, the upper part would not fit the right hand either: left as drawn.
     ticked = {1: [(0, 12, 86)], 2: list(wide)}
     assert share_wide_chords(ticked) == 0 and len(ticked[2]) == 6
+
+
+def test_notes_that_run_on_keep_one_beat_where_the_tracker_changed_its_mind() -> None:
+    # Twenty bars of even eighths. For the first twelve the tracker takes the off-beat for the
+    # beat (the figure's lowest notes fall there), then rights itself: half a beat would go
+    # missing from the score where it does. The notes never break step, so the beat does not
+    # either, and of the tracker's two answers the one that starts the piece on a beat stands.
+    beat, start = 60.0 / 115.0, 3.0
+    rng = random.Random(4)
+    onsets = [start + 0.5 * beat * k + rng.uniform(-0.009, 0.009) for k in range(160)]
+    beats = [start + beat * k for k in range(80)]
+    heard = [b + (0.5 * beat if k < 48 else 0.0) + rng.uniform(-0.02, 0.02) for k, b in enumerate(beats)]
+    bars = [{"start": heard[k], "beats": 4, "unit": 4} for k in range(0, 80, 4)]
+    steady = steady_beats({"beats": heard, "bars": bars}, onsets)
+    assert steady.rephased >= 1
+    assert furthest(steady.beats, beats) < 0.02  # every beat of the music, none half a beat off
+    assert len([b for b in steady.beats if start - 0.1 < b < beats[-1] + 0.1]) == 80
+    lines = [b["start"] for b in steady.bars]
+    assert furthest(lines, beats[::4]) < 0.02 and all(b["beats"] == 4 for b in steady.bars)
+    # Where the tracker is of one mind there is nothing to settle: a piece that begins before the beat stays so.
+    pickup = [t + 0.5 * beat for t in onsets]
+    agreed = [b + 0.5 * beat + rng.uniform(-0.02, 0.02) for b in beats]
+    after = steady_beats(
+        {"beats": agreed, "bars": [{"start": agreed[k], "beats": 4, "unit": 4} for k in range(0, 80, 4)]}, pickup
+    )
+    assert after.rephased == 0 and furthest(after.beats, [b + 0.5 * beat for b in beats]) < 0.02
+
+
+def test_a_few_chords_far_apart_keep_no_tempo() -> None:
+    # After the last steady bar, a ritardando and five slow chords, each struck by a hand: its
+    # notes a hundredth of a second apart. Counted note by note they would sit on many a grid.
+    onsets, beats, lines = piece([(120.0, 8)])
+    end = lines[-1] + 2.0
+    coda = [end + 0.31, end + 0.9, end + 1.8, end + 4.7, end + 7.6, end + 8.7, end + 11.6]
+    spread = [t + d for t in coda for d in (0.0, 0.009, 0.017)]
+    heard = tracked(beats, lines)
+    heard["beats"] += [end + 0.5 * k for k in range(26)]
+    heard["bars"] += [{"start": end + 2.0 * k, "beats": 4, "unit": 4} for k in range(7)]
+    steady = steady_beats(heard, onsets + spread)
+    assert len(steady.stretches) == 1 and steady.stretches[0]["end"] < end
+    assert not any(fitted for b, fitted in zip(steady.beats, steady.fitted, strict=True) if b > end + 0.6)
+
+
+def test_with_the_pedal_down_a_note_lasts_to_the_next_or_to_a_beat() -> None:
+    # Keys touched for a sixteenth and let go, the pedal holding the sound: a beat apart they are
+    # quarters, not eighths and rests; the last, before bars of nothing, lasts its beat.
+    def touched() -> list[Chord]:
+        return [Chord(12 * k, 12 * k + 3, [60 + k]) for k in range(4)] + [Chord(51, 53, [70]), Chord(120, 123, [72])]
+
+    plain = touched()
+    settle_lengths(plain, set(), None)
+    assert [c.end - c.start for c in plain[:3]] == [6, 6, 6]  # as a player's, without the pedal: eighths and rests
+    rung = touched()
+    count = settle_lengths(rung, set(), None, let_ring=True)
+    assert [c.end for c in rung] == [12, 24, 36, 51, 60, 132] and count == 6
+    # Read finely or not: under the pedal a key held a little into the next note is legato, not a second voice.
+    line = [Chord(0, 9, [60]), Chord(6, 15, [64]), Chord(12, 24, [67])]
+    assert len(plan_voices([Chord(c.start, c.end, c.pitches) for c in line])) == 2
+    assert len(plan_voices(line, played=True)) == 1
+
+
+def test_a_score_of_pedalled_notes_has_no_slivers_of_rest() -> None:
+    beat = 0.5
+    notes = [
+        {"start": 2.0 + beat * 0.5 * k, "end": 2.0 + beat * 0.5 * k + 0.07, "pitch": 60 + k % 5, "hand": "right"}
+        for k in range(32)
+    ]
+    notes += [
+        {"start": 2.0 + beat * 2 * k, "end": 2.0 + beat * 2 * k + 0.09, "pitch": 36, "hand": "left"} for k in range(8)
+    ]
+    annotation = tracked([2.0 + beat * k for k in range(18)], [2.0 + 2.0 * k for k in range(5)], jitter=0.0)
+    plain = plan_score(notes, annotation)
+    rung = plan_score(notes, annotation, let_ring=True)
+    assert {w.kind for w in plain.written if w.staff == 1} == {"16th"} and plain.rung == 0
+    assert {w.kind for w in rung.written if w.staff == 1} == {"eighth"}
+    assert [w.kind for w in rung.written if w.staff == 2] == ["half"] * 7 + ["quarter"] and rung.rung >= 8

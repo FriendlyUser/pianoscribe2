@@ -8,7 +8,11 @@ card before the roll and a fade into it. It is then encoded with H.264 like any 
 
 Some tutorials are made differently, and ``Style`` can imitate them too: a dimmed film
 playing behind the notes (``film``), and a filmed keyboard, shaded by the light of the room,
-whose keys do not light and over which the player's hands move (``filmed``).
+whose keys do not light and over which the player's hands move (``filmed``). Videos of a
+real piano filmed from above often draw both hands' notes alike, as white blocks in a glow
+of colour (``glow``), with sparks rising where they land (``sparks``) and a strip of
+coloured light along the top of the keys (``strip_light``); and the camera does not film
+the keys as evenly as the lanes of the notes are laid (``stretch``).
 
     from tests import piano_video
     piano_video.render(notes, path, piano_video.Style())
@@ -59,6 +63,11 @@ class Style:
     keys_light: bool = True
     film: bool = False  # a dimmed film plays behind the notes instead of the still background
     filmed: bool = False  # a filmed keyboard: shaded keys that do not light, and the player's hands over them
+    glow: bool = False  # both hands' notes alike: white blocks with round ends, in a glow of ``right``
+    sparks: bool = False  # sparks rise from where the notes land
+    strip_light: bool = False  # a strip of light in ``right`` along the top of a filmed keyboard, tinting the keys
+    stretch: float = 0.0  # how much wider a filmed keyboard's keys are at its ends than in its middle (0.04: 4%)
+    key_brightness: float = 1.0  # a filmed keyboard in a dark room: 0.6
     title_seconds: float = 1.0  # a title card before the roll appears
     fade_frames: int = 6
     crf: int = 26  # H.264 quality; streaming sites are about this lossy
@@ -124,6 +133,8 @@ def _roll(notes: list[VideoNote], style: Style, layout: _Layout, speed: float, s
             draw.line([(round(x0), 0), (round(x0), height)], fill=(54, 54, 54), width=1)
         elif pitch % 12 == 5:
             draw.line([(round(x0), 0), (round(x0), height)], fill=(26, 26, 26), width=1)
+    if style.glow:
+        return _glowing_roll(notes, style, layout, speed, height)
     radius = max(2, round(0.15 * layout.key_width))
     font = _font(max(8, round(0.62 * layout.key_width)))
     small = _font(max(7, round(0.42 * layout.key_width)))
@@ -149,6 +160,74 @@ def _roll(notes: list[VideoNote], style: Style, layout: _Layout, speed: float, s
                 y = box[3] - tall - 5 - box_text[1]
                 draw.text((x, y), text, font=use, fill=(253, 253, 253), stroke_width=2, stroke_fill=outline)
     return np.asarray(image)
+
+
+def _block_span(pitch: int, layout: _Layout) -> tuple[float, float]:
+    """Where a glowing block falls: a white key's as wide as the key, a black key's half as wide."""
+    if pitch in layout.black:
+        x0, x1 = layout.black[pitch]
+        centre = (x0 + x1) / 2
+        return centre - 0.25 * layout.key_width, centre + 0.25 * layout.key_width
+    x0, x1 = layout.white[pitch]
+    return x0 + 0.5, x1 - 0.5
+
+
+def _glowing_roll(notes: list[VideoNote], style: Style, layout: _Layout, speed: float, height: int) -> np.ndarray:
+    """The roll of a video that draws every note as a white block with round ends in a glow of colour.
+
+    Drawn four times the size and scaled down, so that the blocks' edges fall between pixels as
+    they do in a video scaled to a small picture.
+    """
+    scale = 4
+    size = (style.width * scale, height * scale)
+    cores = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(cores)
+    for note in notes:
+        x0, x1 = _block_span(note.pitch, layout)
+        low = height - 1 - note.start * speed
+        high = height - 1 - note.end * speed
+        box = [x0 * scale, (high + 1) * scale, x1 * scale, low * scale]
+        if box[3] - box[1] < 2 * scale:
+            continue
+        draw.rounded_rectangle(
+            box, radius=min((box[2] - box[0]) / 2, (box[3] - box[1]) / 2, 0.3 * layout.key_width * scale), fill=255
+        )
+    cores = cores.resize((style.width, height), Image.Resampling.BOX)
+    core = np.asarray(cores, dtype=np.float32)[..., None] / 255.0
+    halo = (
+        np.asarray(cores.filter(ImageFilter.GaussianBlur(0.35 * layout.key_width)), dtype=np.float32)[..., None] / 255.0
+    )
+    colour = np.array(style.right, dtype=np.float32)
+    picture = np.array(style.background, dtype=np.float32) + 1.6 * halo * colour
+    picture = picture * (1.0 - core) + np.array([252.0, 244.0, 255.0]) * core
+    return np.clip(picture, 0, 255).astype(np.uint8)
+
+
+def _sparks(frame: np.ndarray, sounding: list[VideoNote], style: Style, layout: _Layout, index: int) -> None:
+    """Sparks above the notes that sound: bright specks that drift up on their own, not with the roll."""
+    top = style.keyboard_top
+    for note in sounding:
+        x0, x1 = _block_span(note.pitch, layout)
+        rng = np.random.default_rng(note.pitch * 7919 + int(note.start * 1000))
+        for _ in range(14):
+            born, rise = rng.integers(0, 40), rng.uniform(1.5, 5.0)
+            drift, side = rng.uniform(-0.6, 0.6), rng.uniform(x0 - layout.key_width, x1 + layout.key_width)
+            age = (index - born) % 40
+            x, y = int(side + drift * age), int(top - 4 - rise * age)
+            if 0 <= x < style.width - 1 and 0 <= y < top - 1:
+                frame[y : y + 2, x : x + 2] = (255, 235, 255)
+
+
+def _stretched(keyboard: np.ndarray, stretch: float) -> np.ndarray:
+    """``keyboard`` as a camera with a wide lens sees it: its keys wider at the ends than in the middle."""
+    width = keyboard.shape[1]
+    along = (np.arange(width) + 0.5) / width
+    # The column of the even keyboard seen at each column of the picture: squeezed at the ends.
+    source = (along - stretch * np.sin(2 * np.pi * along) / (2 * np.pi)) * width - 0.5
+    low = np.clip(np.floor(source).astype(int), 0, width - 1)
+    high = np.clip(low + 1, 0, width - 1)
+    share = np.clip(source - low, 0.0, 1.0)[None, :, None]
+    return (keyboard[:, low] * (1 - share) + keyboard[:, high] * share).astype(np.uint8)
 
 
 def _keyboard(style: Style, layout: _Layout, lit: dict[int, tuple[int, int, int]]) -> np.ndarray:
@@ -189,10 +268,20 @@ def _filmed_keyboard(style: Style, layout: _Layout) -> np.ndarray:
         draw.rectangle([round(x0), 4, round(x0 + bevel), round(0.65 * depth)], fill=(105,) * 3)
         draw.rectangle([round(x1 - bevel), 4, round(x1) - 1, round(0.65 * depth)], fill=(105,) * 3)
     draw.rectangle([0, 0, style.width, 3], fill=(140, 20, 24))
-    return np.asarray(image)
+    keys = np.asarray(image).astype(np.float32) * style.key_brightness
+    if style.strip_light:
+        # A strip of lights along the top of the keys: a bright line, and its colour over the keys below it.
+        colour = np.array(style.right, dtype=np.float32)
+        reach = np.exp(-rows / (0.12 * depth))[..., None]
+        keys = keys * (1.0 - 0.5 * reach) + 0.75 * reach * colour * (keys / 255.0) ** 0.5
+        keys[:3] = colour
+    keys = np.clip(keys, 0, 255).astype(np.uint8)
+    return _stretched(keys, style.stretch) if style.stretch else keys
 
 
-def _hands(keyboard: np.ndarray, notes: list[VideoNote], now: float, layout: _Layout) -> np.ndarray:
+def _hands(
+    keyboard: np.ndarray, notes: list[VideoNote], now: float, layout: _Layout, stretch: float = 0.0
+) -> np.ndarray:
     """The player's hands over a filmed keyboard, each above the notes it plays (or played last)."""
     image = Image.fromarray(keyboard)
     draw = ImageDraw.Draw(image)
@@ -205,9 +294,19 @@ def _hands(keyboard: np.ndarray, notes: list[VideoNote], now: float, layout: _La
         played = [note for note in own if note.start <= now]
         chosen = sounding or played[-1:] or own[:1]
         centre = float(np.mean([sum(_span(note.pitch, layout)) / 2 for note in chosen]))
+        if stretch:  # the hand is over the key where the camera shows it
+            width = keyboard.shape[1]
+            centre = _seen_at(centre, width, stretch)
         reach = 1.6 * layout.key_width
         draw.ellipse([centre - reach, 0.3 * depth, centre + reach, 1.25 * depth], fill=(226, 184, 154))
     return np.asarray(image)
+
+
+def _seen_at(column: float, width: int, stretch: float) -> float:
+    """Where a camera with a wide lens shows column ``column`` of an even keyboard (see ``_stretched``)."""
+    along = (np.arange(width) + 0.5) / width
+    source = (along - stretch * np.sin(2 * np.pi * along) / (2 * np.pi)) * width - 0.5
+    return float(np.interp(column, source, np.arange(width)))
 
 
 def _film(style: Style, index: int) -> np.ndarray:
@@ -290,9 +389,11 @@ def render(
         sounding = [note for note in notes if note.start <= now < note.end]
         lit = {note.pitch: _colour(note, style) for note in sounding} if style.keys_light else {}
         if filmed_keys is not None:
-            frame[top:] = _hands(filmed_keys, notes, now, layout)
+            frame[top:] = _hands(filmed_keys, notes, now, layout, style.stretch)
         else:
             frame[top:] = _keyboard(style, layout, lit)
+        if style.sparks:
+            _sparks(frame, sounding, style, layout, index)
         if style.flare and sounding:
             glow = Image.new("L", (style.width, style.height), 0)
             draw = ImageDraw.Draw(glow)
