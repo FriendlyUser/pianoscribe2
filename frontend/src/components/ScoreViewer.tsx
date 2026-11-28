@@ -6,6 +6,7 @@ import { formatBytes } from "../validation";
 
 const DOWNLOADS: { name: string; label: string; primary?: boolean }[] = [
   { name: "score.pdf", label: "PDF", primary: true },
+  { name: "score.mp3", label: "MP3" },
   { name: "score.html", label: "HTML" },
   { name: "score.musicxml", label: "MusicXML" },
   { name: "score.mid", label: "MIDI (score)" },
@@ -101,6 +102,15 @@ export function ScoreViewer({ job, cached, shellPdf = false }: Props) {
             from there.
           </p>
           {pdfNote && <p className="hint">{pdfNote}</p>}
+          {"score.mp3" in result.artifacts && (
+            <audio
+              className="score-audio"
+              controls
+              preload="none"
+              src={artifactUrl(job.id, "score.mp3")}
+              aria-label={`The score played on a piano: ${job.title}`}
+            />
+          )}
         </div>
         <div className="downloads" aria-label="Downloads">
           {bridge && (

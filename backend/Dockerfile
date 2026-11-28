@@ -58,9 +58,10 @@ RUN ln -s /models/tsumugi/checkpoints tsumugi/checkpoints \
 FROM base AS worker
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg libcairo2 fontconfig fonts-liberation2 util-linux \
-      gcc g++ libc6-dev fonts-noto-cjk \
+      gcc g++ libc6-dev fonts-noto-cjk fluidsynth fluid-soundfont-gm \
  && rm -rf /var/lib/apt/lists/*
-# (gcc/g++: the transcriber compiles its GPU kernels on first use, via torch.compile.)
+# (gcc/g++: the transcriber compiles its GPU kernels on first use, via torch.compile.
+#  fluidsynth, fluid-soundfont-gm: the score played on a sampled piano, score.mp3.)
 # JavaScript runtime required by yt-dlp for YouTube extraction.
 COPY --from=denoland/deno:bin-2.9.8 /deno /usr/local/bin/deno
 COPY requirements/worker.txt /tmp/requirements.txt
@@ -130,6 +131,7 @@ refs = Path('/opt/hf/hub/models--anime-song--SheetSage2-Refined/refs'); refs.mkd
 FROM base AS video
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg libcairo2 fontconfig fonts-liberation2 util-linux fonts-noto-cjk \
+      fluidsynth fluid-soundfont-gm \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=denoland/deno:bin-2.9.8 /deno /usr/local/bin/deno
 COPY requirements/worker.txt /tmp/requirements.txt

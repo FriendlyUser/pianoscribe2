@@ -117,6 +117,10 @@ def test_job_lookup_and_artifacts(client: TestClient, store, artifacts) -> None:
     assert 'filename="my-piece.pdf"' in pdf.headers["content-disposition"]
     html = client.get(f"/api/jobs/{job_id}/artifacts/score.html")
     assert "default-src 'none'" in html.headers["content-security-policy"]
+    artifacts.put_all(job_id, {"score.html": b"<html></html>", "score.musicxml": b"<x/>", "score.mp3": b"ID3\x03"})
+    played = client.get(f"/api/jobs/{job_id}/artifacts/score.mp3", params={"download": "true"})
+    assert played.status_code == 200 and played.headers["content-type"] == "audio/mpeg"
+    assert 'filename="my-piece.mp3"' in played.headers["content-disposition"]
     assert client.get(f"/api/jobs/{job_id}/artifacts/..%2F..%2Fetc%2Fpasswd").status_code == 404
     assert client.get(f"/api/jobs/{job_id}/artifacts/secret.txt").status_code == 404
 

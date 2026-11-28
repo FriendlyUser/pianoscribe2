@@ -3,9 +3,10 @@
 #
 # The notes are read from the picture (backend/app/visual) and written down by rule; only the
 # beats, the bar lines and the key come from a model (SheetSage2-Refined), which runs on the
-# runner's processor. The score (PDF, MusicXML, MIDI) and the facts of the reading are attached
-# to the run as the artifact "score", kept for 3 days. In a public repository anyone signed in
-# to GitHub can download a run's artifacts while they are kept.
+# runner's processor. The score (PDF, MusicXML, MIDI, and an MP3 of it played on a sampled piano)
+# and the facts of the reading are attached to the run as the artifact "score", kept for 3 days.
+# In a public repository anyone signed in to GitHub can download a run's artifacts while they are
+# kept.
 #
 # YouTube refuses downloads from many runners ("This content isn't available" or "Sign in to
 # confirm you're not a bot", for any video; the run then fails with youtube_blocked). Exporting
@@ -35,6 +36,7 @@ on:
       - .github/workflows/piano-video.yml
       - backend/app/visual/**
       - backend/app/pipeline/**
+      - backend/app/engrave/audio.py
       - backend/app/ingest/youtube.py
       - backend/model_scripts/exact_score.py
       - backend/model_scripts/notate_exact.py
@@ -46,6 +48,7 @@ on:
       - .github/workflows/piano-video.yml
       - backend/app/visual/**
       - backend/app/pipeline/**
+      - backend/app/engrave/audio.py
       - backend/app/ingest/youtube.py
       - backend/model_scripts/exact_score.py
       - backend/model_scripts/notate_exact.py
@@ -91,10 +94,11 @@ jobs:
             echo "PYTHONPATH=$GITHUB_WORKSPACE/backend"
             echo "SCORE=$RUNNER_TEMP/score"
           } >> "$GITHUB_ENV"
-      - name: System packages (ffmpeg; fonts for the PDF)
+      - name: System packages (ffmpeg; fonts for the PDF; a synthesizer and a piano for the MP3)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends ffmpeg libcairo2 fontconfig fonts-liberation2 fonts-noto-cjk
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg libcairo2 fontconfig fonts-liberation2 fonts-noto-cjk \
+            fluidsynth fluid-soundfont-gm
       - uses: astral-sh/setup-uv@v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
@@ -204,7 +208,10 @@ jobs:
           }
           for name, value in rows.items():
               print(f"| {name} | {value} |")
-          print("\nThe score is in the artifact **score** of this run (kept for 3 days).")
+          print(
+              "\nThe score is in the artifact **score** of this run (kept for 3 days): score.pdf to read,"
+              " score.mp3 to listen to."
+          )
           EOF
       - uses: actions/upload-artifact@v7
         if: always() && github.event_name == 'workflow_dispatch'

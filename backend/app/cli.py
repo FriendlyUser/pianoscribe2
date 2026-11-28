@@ -85,6 +85,14 @@ def _doctor(_: argparse.Namespace) -> int:
         if done.returncode == 0 and " True " not in f" {done.stdout} ":
             print("      no GPU visible: the models will run on the CPU, many times slower")
     check("score writer", (settings.scripts_dir / "notate_cover.py").is_file(), str(settings.scripts_dir))
+    from app.engrave.audio import synthesizer
+
+    # Not needed for a score: without it there is no score.mp3, and nothing else changes.
+    found = synthesizer(settings)
+    print(
+        f"{'ok  ' if found else 'note'}  score played as MP3: "
+        + (f"{found[0]} with {found[1]}" if found else "no FluidSynth or no SoundFont, so no score.mp3")
+    )
     return 0 if ok else 1
 
 

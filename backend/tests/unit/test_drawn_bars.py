@@ -160,12 +160,17 @@ def test_two_dotted_eighths_share_a_beat_of_six_eight() -> None:
 
 def test_a_bar_of_six_eighths_is_counted_in_dotted_quarters() -> None:
     measures = [SimpleNamespace(time_signature=(6, 8), length=Fraction(3), directions=[], tempos=[]) for _ in range(20)]
-    starts = [4.0 + BAR * k for k in range(20)]
-    starts[9] -= 0.03  # a frame the recording dropped: no change of tempo
+    # A recording that drops a frame now and then: every fifth bar a frame short, the others a little long.
+    lengths = [2.36 if k % 5 == 4 else 2.41 for k in range(20)]
+    starts = [4.0 + sum(lengths[:k]) for k in range(20)]
     steady = SimpleNamespace(stretches=[], followed=None, drawn={"scatter_ms": 8.0})
-    assert mark_tempos(measures, starts, 4.0 + BAR * 20, steady) == [(0, 50)]
+    assert mark_tempos(measures, starts, 4.0 + sum(lengths), steady) == [(0, 50)]
     assert measures[0].directions == [(Fraction(0), "metronome_quarter._50")]
     assert not any(measure.directions for measure in measures[1:])
+    # Played, the bars take the time they took: 75 quarters a minute. The usual bar's tempo (74.7)
+    # would end the piece a fifth of a second after the video does.
+    assert len(measures[0].tempos) == 1 and abs(measures[0].tempos[0][1] - 60.0 * 60 / sum(lengths)) < 1e-9
+    assert not any(measure.tempos for measure in measures[1:])
 
 
 def test_key_signatures_are_the_ones_that_save_most_accidentals() -> None:

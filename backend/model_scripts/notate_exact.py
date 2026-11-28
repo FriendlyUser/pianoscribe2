@@ -156,7 +156,12 @@ def mark_tempos(measures: list, starts: list[float], end: float, steady: object 
     slowed = False
     closing = len(measures) - 2  # from here on a ritardando is the close of the piece: nothing returns to tempo
     for a, b, tempo in runs:
-        measures[a].tempos = [(Fraction(0), tempo)]  # what is played, bar by bar
+        # What is played: the run's bars in the time they took. (Their median would be the tempo of the
+        # usual bar, and a recording that drops a frame now and then has some bars a frame short: played
+        # at the median, the score of the fifth development video ends a quarter of a second after it.)
+        seconds = edges[b] - edges[a]
+        quarters = sum(float(measure.length) for measure in measures[a:b])
+        measures[a].tempos = [(Fraction(0), 60.0 * quarters / seconds if seconds > 0 else tempo)]
         if b - a >= lasting:
             # A tracked bar's length says its tempo to a few beats a minute, no better: that is no new tempo.
             # Nor is a tempo no further from the one marked than bars of one tempo are from each other.

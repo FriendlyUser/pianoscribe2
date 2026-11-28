@@ -304,6 +304,35 @@ fall on its score's bar lines to within 25 ms. The first has a hang of its own, 
 moved, and its score is note for note the one it was. The two filmed videos are read another way
 and are untouched. All four scores are unchanged.
 
+### The scores, played
+
+Every score comes with `score.mp3`: the score as written, played on a sampled grand piano
+(`app/engrave/audio.py`). That it plays what is written is tested on a scale whose every note is
+known (`tests/unit/test_score_audio.py`: each note at its pitch, none an octave out, its attack
+within 20 ms of its moment). Whether what is written is the music of the video can be heard in
+it, and was measured: the pitch classes sounding every 93 ms in the MP3 against those of the
+video's own sound, the MP3 placed where its first bar falls in the video and then each ten
+seconds of it placed again on its own, within a second and a half, to show any drift.
+
+| | Night Changes | What It Sounds Like | What It Sounds Like (EASY) | On Purpose | Scene Shifts There |
+|---|---|---|---|---|---|
+| MP3 | 231 s | 241 s | 245 s | 240 s | 264 s |
+| The score's bar 1 in the video | 3.16 s | 7.11 s | 6.22 s | 10.68 s | 4.32 s |
+| Pitch classes, MP3 against the video: placed so / placed anywhere else (median) | 0.76 / 0.23 | 0.82 / 0.12 | 0.87 / 0.12 | 0.82 / 0.34 | 0.75 / 0.24 |
+| Ten-second stretches that match better than unrelated moments of the two do | 23 of 23 | 24 of 24 | 24 of 24 | 23 of 23 | 26 of 26 |
+| Furthest a stretch is from where the whole is placed | 93 ms | 0 | 46 ms | 46 ms | 46 ms |
+
+(Stretches with fewer than three notes struck are left out: a chord ringing on can be placed
+anywhere. 46 ms is one step of the comparison.) Night Changes, played by hand, keeps the
+player's time bar by bar and stays within a tenth of a second of the video throughout.
+
+Scene Shifts There at first drifted: 0.1 s ahead of the video at the start, 0.19 s behind it at
+the end. Each tempo was played at its typical bar's length, and that recording drops a frame
+every 33 seconds, so one bar in fifteen is a frame short and the typical bar is 0.1% longer
+than the average. A passage under one tempo mark is now played in the time its bars took,
+which moved the tempo played by less than 0.1% in four scores (0.32% for the last bars of What
+It Sounds Like), changed no note and no printed mark, and took the drift away.
+
 ## Score references
 
 A reference is a JSON file transcribed by hand from a printed score:

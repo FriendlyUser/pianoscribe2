@@ -18,6 +18,7 @@ ARTIFACTS: dict[str, tuple[str, str]] = {
     "score.html": ("text/html; charset=utf-8", "html"),
     "score.musicxml": ("application/vnd.recordare.musicxml+xml", "musicxml"),
     "score.mid": ("audio/midi", "mid"),
+    "score.mp3": ("audio/mpeg", "mp3"),
     "performance.mid": ("audio/midi", "performance.mid"),
     "transcription.mid": ("audio/midi", "transcription.mid"),
 }

@@ -58,6 +58,33 @@ def test_the_written_score_is_the_piece(ode: tuple[Job, Path]) -> None:
     assert scores.meter_correct and scores.key_accuracy == 1.0, scores
 
 
+def test_the_score_is_played_as_written(ode: tuple[Job, Path], cover_settings: Settings, tmp_path: Path) -> None:
+    from app.engrave.audio import synthesizer
+    from app.ingest import media
+    from app.ingest.audio import read_wav
+    from app.visual import audio as sound
+
+    played = ode[1].parent / "score.mp3"
+    if synthesizer(cover_settings) is None:
+        assert not played.exists()
+        pytest.skip("no FluidSynth or SoundFont here: no score.mp3")
+    result = ode[0].result
+    assert result is not None and result.artifacts["score.mp3"] == played.stat().st_size
+    seconds = media.decode_audio(
+        played, tmp_path / "played.wav", cover_settings.model_copy(update={"sandbox": "basic"})
+    )
+    audio, rate = read_wav(tmp_path / "played.wav")
+    # Eight bars of four beats at the tempo marked, and the last chord's ring.
+    beat = 60.0 / result.tempo_bpm
+    assert 32 * beat < seconds < 32 * beat + 4.0
+    # Every note of the piece, where the score puts it and at its pitch.
+    notes = [(n.start_beat * beat, (n.start_beat + n.duration_beats) * beat, n.pitch) for n in synth.ode_to_joy()]
+    offset = sound.audio_offset([start for start, _, _ in notes], audio, rate)
+    assert offset is not None and offset.reliable and abs(offset.seconds) < 0.03
+    octaves = sound.octave_scores(notes, audio, rate)
+    assert max(octaves, key=lambda shift: octaves[shift]) == 0
+
+
 def test_each_hand_is_on_its_own_staff(ode: tuple[Job, Path]) -> None:
     score = read_musicxml(ode[1])
     melody = sorted(n.pitch for n in synth.ode_to_joy() if n.velocity == 92)

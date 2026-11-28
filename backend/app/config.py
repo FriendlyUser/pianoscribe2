@@ -132,6 +132,12 @@ class Settings(BaseSettings):
     youtube_cookies_file: Path | None = None
 
     page_size: Literal["A4", "Letter"] = "A4"
+    # score.mp3: the score played on a sampled piano by FluidSynth (app.engrave.audio). Left out
+    # where the synthesizer or a SoundFont is missing, or when turned off.
+    score_audio: bool = True
+    fluidsynth_bin: str = "fluidsynth"
+    # A General MIDI SoundFont whose first program is a piano. None: FluidR3_GM where the system keeps it.
+    soundfont_file: Path | None = None
     # cairo: the worker writes score.pdf. none: no server-side PDF; a desktop shell prints
     # the score page with its own browser engine instead.
     pdf_renderer: Literal["cairo", "none"] = "cairo"

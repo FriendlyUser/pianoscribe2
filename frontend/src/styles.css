@@ -126,6 +126,7 @@ progress::-moz-progress-bar { background: var(--accent); }
 .facts { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; }
 .facts li { background: var(--soft); border-radius: 99px; padding: 3px 11px; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
 .downloads { display: flex; flex-wrap: wrap; gap: 8px; }
+.score-audio { width: min(100%, 460px); height: 40px; }
 .score-frame { width: 100%; height: min(82vh, 1100px); min-height: 480px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
 .footnote { padding: 18px 0 26px; color: var(--muted); font-size: 0.8rem; text-align: center; }
 @media (max-width: 560px) {

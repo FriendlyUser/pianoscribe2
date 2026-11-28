@@ -28,6 +28,7 @@ version 1 and is described here as it now stands.
 | Canonical notation | MusicXML 4.0 | Open interchange format |
 | Engraving | Verovio 6 | SVG pages, timing map and MIDI from the same loaded score |
 | PDF | CairoSVG + pypdf | Vector PDF from the engraved pages, no browser in the worker |
+| The score, played | FluidSynth + the FluidR3_GM SoundFont, LAME through ffmpeg | A sampled grand piano from distribution packages, rendered some forty times faster than real time |
 | Frontend | React 18, TypeScript, Vite; nginx | Small static bundle, typed API client |
 | Packaging | Docker Compose, multi-stage images | `docker compose up` runs everything |
 
@@ -57,17 +58,17 @@ flowchart LR
 
 ```
 song (band, vocals, orchestra, soundtrack)
-  audio.wav ─► transcription.mid ─► annotation.json + performance.mid ─► score.musicxml ─► PDF / HTML / MIDI
+  audio.wav ─► transcription.mid ─► annotation.json + performance.mid ─► score.musicxml ─► PDF / HTML / MIDI / MP3
               stems, every          beats, bars, meter,  a piano part     note values,
               instrument's notes    melody, chords       for two hands    hands, key
 
 solo piano
-  audio.wav ─► performance.mid ─► annotation.json ─► score.musicxml ─► PDF / HTML / MIDI
+  audio.wav ─► performance.mid ─► annotation.json ─► score.musicxml ─► PDF / HTML / MIDI / MP3
               the notes played,    beats, bars,
               with dynamics        meter
 
 piano tutorial video (notes falling onto a keyboard)
-  video ─► visual.json + performance.mid ─► annotation.json ─► score.musicxml ─► PDF / HTML / MIDI
+  video ─► visual.json + performance.mid ─► annotation.json ─► score.musicxml ─► PDF / HTML / MIDI / MP3
            the notes shown: key, onset,     beats, bars,        written by rule,
            length, hand (no model)          meter, key (audio)  as read
 ```
@@ -390,6 +391,7 @@ What differs from the server, and why:
 | Media sandbox | rlimits via util-linux (`PS_SANDBOX=strict`) | time limits only (`basic`): the tools do not exist on Windows/macOS |
 | Process control | process groups and SIGKILL | the same on macOS; `taskkill /T` on Windows (`app/proc.py`) |
 | PDF | CairoSVG in the worker | Chromium's print engine in the shell: no native graphics libraries to ship, and identical to the web viewer |
+| The score, played | `score.mp3` (FluidSynth, FluidR3_GM) | none shipped: no `score.mp3`; the score page plays it with its own voice |
 | Stem separator audio | TorchCodec (FFmpeg shared libraries) | soundfile (`PS_AUDIO_IO=soundfile`, `model_scripts/song_transcribe.py`) |
 | Model weights | downloaded on first use | bundled at pinned revisions; models load offline (`PS_MODELS_OFFLINE`) |
 | Python | one environment per model program | one relocatable environment for everything (`PS_MODEL_PYTHON`) |
@@ -470,6 +472,16 @@ produces everything else:
 - **MIDI:** `score.mid` is rendered by Verovio from the score; `performance.mid` is the piano
   performance before notation (original timing and dynamics); `transcription.mid` (songs only) is
   the multi-instrument transcription the arrangement was made from.
+- **MP3:** `score.mid` played by FluidSynth on the acoustic grand of the FluidR3 General MIDI
+  SoundFont (sampled from a Yamaha grand; MIT licence, packaged as `fluid-soundfont-gm`), with
+  only the samples it uses loaded, no chorus and FluidSynth's room reverberation; its loudest
+  moment is then set one decibel below full scale and ffmpeg encodes it with LAME at a variable
+  rate of about 190 kbit/s (`app/engrave/audio.py`). Both programs run under the media sandbox,
+  though their input is the app's own. A four-minute score takes about seven seconds. It is the
+  score as written: every bar at its own tempo (a hand-played video's score keeps the player's
+  time bar by bar), one loudness throughout (the score has no dynamics), and notes the pedal
+  holds sounding as long as they are written. Where FluidSynth or a SoundFont is missing (the
+  desktop builds) there is no MP3, and nothing else changes.
 
 Because the PDF pages and the HTML's wide layout are the same SVGs, they are identical by
 construction. The web app's viewer is that HTML file in an iframe.
@@ -502,6 +514,10 @@ with its outcome; per-stage timings are stored on the job record and returned by
 
 **Musical**
 
+- `score.mp3` plays the score, not the recording: every note at one loudness (the score marks no
+  dynamics), no pedal beyond the lengths written, each passage at the tempo its bars took, on a
+  General MIDI SoundFont's grand piano. It is for hearing what was written down, and checking it
+  against the original by ear; it is not a performance.
 - A song's score is an arrangement written by a generative model. It follows the melody, bass and
   harmony of the recording closely (see the benchmark), but inner voices and figuration are the
   model's own, and it can add or drop a note. It is a strong first draft for a pianist, not an

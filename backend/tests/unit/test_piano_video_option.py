@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from app.api import deps
 from app.api.main import create_app
 from app.config import Settings
+from app.engrave.audio import synthesizer
 from app.jobs.keys import upload_job_id
 from app.jobs.models import JobOptions
 from app.visual.check import score_fidelity
@@ -121,4 +122,6 @@ def test_the_pipeline_reads_the_video_and_writes_what_it_read(settings: Settings
     assert read.confirmed_by_keys == len(truth) and (read.lowest_key, read.highest_key) == ("A1", "A6")
     assert read.score_kept == 1.0 and read.score_backed == 1.0
     assert (tmp_path / "out" / "performance.mid").stat().st_size > 0
+    # The score played, where there is a synthesizer to play it with.
+    assert (tmp_path / "out" / "score.mp3").is_file() == (synthesizer(settings) is not None)
     assert not list((settings.work_dir).glob("*/video.*"))  # the picture is deleted once read

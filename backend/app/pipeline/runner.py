@@ -345,6 +345,7 @@ class Pipeline:
 
     def run(self) -> Job:
         from app.engrave import export_musicxml
+        from app.engrave.audio import render_mp3
         from app.engrave.summary import summarize
         from app.ingest.audio import read_wav
 
@@ -383,7 +384,12 @@ class Pipeline:
             transcription = self.workdir / "transcription.mid"
             if transcription.exists():
                 files["transcription.mid"] = transcription.read_bytes()
-            sizes = self.artifacts.put_all(self.job.id, files)
+        self._report(Stage.ENGRAVING, 0.9, "Playing the score", force=True)
+        with self._timed("audio"):
+            sound = render_mp3(exports.midi, self.workdir, self.settings, title=self.job.title)
+        if sound is not None:
+            files["score.mp3"] = sound
+        sizes = self.artifacts.put_all(self.job.id, files)
 
         samples, rate = read_wav(audio)
         fidelity_value = facts.get("melody_fidelity")

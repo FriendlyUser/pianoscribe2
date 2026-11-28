@@ -11,7 +11,7 @@ Upload an audio/video file (MP3, WAV, MP4, MOV) or paste a YouTube link:
   note, its length and the hand that plays it are measured in the picture and written down as shown.
 
 Each way you get an engraved two-staff score to play back in the browser, print, or download as
-PDF, standalone HTML, MusicXML and MIDI.
+PDF, standalone HTML, MusicXML and MIDI, and an MP3 of the score played on a sampled grand piano.
 
 This is a ground-up rebuild of [PianoScribe](https://github.com/FriendlyUser/pianoscribe). The
 service around the music (API, job queue, sandboxed ingestion, engraving, web UI) is the same; every
@@ -212,15 +212,19 @@ curl -O "http://localhost:8080/api/jobs/JOB_ID/artifacts/score.pdf?download=true
 **On GitHub Actions.** The workflow "Piano tutorial video"
 ([.github/workflows/piano-video.yml](.github/workflows/piano-video.yml)) takes a YouTube link to a
 piano tutorial video and runs the same CLI on a GitHub runner, on its processor: Actions tab >
-Piano tutorial video > Run workflow. The score comes back as the run's artifact `score` (kept for
-3 days; in a public repository, any signed-in GitHub user can download it while it is kept), with
+Piano tutorial video > Run workflow. The score comes back as the run's artifact `score`, with an
+MP3 of it played on a piano (kept for 3 days; in a public repository, any signed-in GitHub user can download it while it is kept), with
 the reading's checks in the run's summary. YouTube refuses many runners (the run fails with
 `youtube_blocked`); put a `cookies.txt` for youtube.com, exported from a browser signed in to
 YouTube, into the repository secret `YOUTUBE_COOKIES` to get past that.
 
 Artifacts per job: `score.pdf`, `score.html`, `score.musicxml`, `score.mid` (the score as MIDI),
+`score.mp3` (the score as written, played by FluidSynth on the sampled grand piano of the FluidR3
+General MIDI SoundFont: in the Docker images and the workflow; elsewhere where `fluidsynth` and a
+SoundFont are installed, for instance `apt-get install fluidsynth fluid-soundfont-gm`),
 `performance.mid` (the piano part before notation, with original timing and dynamics) and, for
-songs, `transcription.mid` (every instrument the transcriber heard).
+songs, `transcription.mid` (every instrument the transcriber heard). The web page plays the MP3
+above the score.
 
 ## Configuration
 
@@ -242,6 +246,8 @@ Environment variables with the `PS_` prefix; copy `.env.example` to `.env`. The 
 | `PS_VIDEO_SCORE_WRITER` | `exact` | Piano videos: `exact` writes the notes read down by rule; `model` hands them to the score model |
 | `PS_YOUTUBE_VIDEO_HEIGHT` | `1080` | Largest picture fetched for a YouTube piano video (touching notes need the detail) |
 | `PS_PAGE_SIZE` | `A4` | `A4` or `Letter` |
+| `PS_SCORE_AUDIO` | `true` | Write `score.mp3`, the score played on a sampled piano (needs `fluidsynth` and a SoundFont) |
+| `PS_SOUNDFONT_FILE` | FluidR3_GM where installed | A General MIDI SoundFont (`.sf2`) whose first program is a piano, to play the score with |
 
 The full list is in [backend/app/config.py](backend/app/config.py).
 
